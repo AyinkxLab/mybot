@@ -22,6 +22,26 @@ class Agent:
     def reset(self) -> None:
         self.messages = [self.messages[0]]
 
+    def compact(self) -> str:
+        request = self.messages + [
+            {
+                "role": "user",
+                "content": "Summarize our conversation so far in one concise paragraph, keeping "
+                "key facts, decisions, and unfinished tasks.",
+            }
+        ]
+        response = self.client.chat.completions.create(model=self.model, messages=request)
+        summary = response.choices[0].message.content or ""
+        self.messages = [
+            {
+                "role": "system",
+                "content": self.messages[0]["content"]
+                + "\n\nSummary of the earlier conversation:\n"
+                + summary,
+            }
+        ]
+        return summary
+
     def _trim(self) -> None:
         user_indices = [i for i, msg in enumerate(self.messages) if msg.get("role") == "user"]
         if len(user_indices) > self.history_limit:
@@ -67,6 +87,11 @@ class Agent:
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if reasoning:
+                    yield {"type": "reasoning", "text": reasoning}
                 if delta.content:
                     content_parts.append(delta.content)
                     yield {"type": "delta", "text": delta.content}

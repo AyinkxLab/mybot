@@ -31,7 +31,9 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 ## Running it
 
-- **Full-screen TUI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
+- **Full-screen TUI (default):** type `mybot` from any directory. The repo folder is added to
+  your `PATH`; `mybot.cmd` (cmd/PowerShell), the extensionless `mybot` (Git Bash), and a
+  PowerShell profile function all launch it. You can also run `python tui.py`.
 - **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
@@ -48,14 +50,28 @@ view:
 - an approval modal for gated actions
 
 Keys:
-`tab` agent mode · `ctrl+p` command palette · `ctrl+t` theme · `ctrl+o` toggle todos ·
-`ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
+`tab` agent mode · `ctrl+p` command palette · `ctrl+x` leader (`n` new, `l` sessions, `u` undo,
+`r` redo, `t` theme, `m` models, `c` compact, `x` export, `q` quit) · `ctrl+t` theme ·
+`ctrl+o` toggle sidebar · `ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
 
-Commands: `/connect`, `/models`, `/theme`, `/mode`, `/reset`, `/new`, `/exit` (`/help` in the TUI).
+Commands: `/connect`, `/models`, `/theme` (`/themes`), `/mode`, `/thinking`, `/details`,
+`/compact` (`/summarize`), `/export`, `/sessions` (`/resume`, `/continue`), `/undo`, `/redo`,
+`/new` (`/clear`), `/reset`, `/exit` (`/help` in the TUI).
+
+Sessions are kept in memory; `/sessions` switches between them and `/undo` / `/redo` move the
+last turn. (Undo/redo affect the conversation only — they don't revert files, unlike opencode.)
+
+Prefixes: `!command` runs a shell command; `@path` attaches a file's contents to your message.
+
+For models that stream reasoning (e.g. `deepseek-reasoner`), a **Thinking** block is shown and
+can be toggled with `/thinking`. `/details` expands tool args/results. A spinner shows while
+waiting for the first token.
 
 Agent modes: **build** (default, full access) and **plan** (read-only; the model plans but does
-not modify files or run mutating commands). Themes: `mybot`, `dracula`, `tokyo-night`, `gruvbox`,
-`nord`, plus Textual's built-ins.
+not modify files or run mutating commands).
+
+Themes (default **opencode**): `opencode`, `mybot`, `catppuccin`, `one-dark`, `matrix`,
+`dracula`, `tokyo-night`, `gruvbox`, `nord`, plus Textual's built-ins. Switch with `/theme`.
 
 The TUI is built with [Textual](https://textual.textualize.io/) (`textual` + `rich` in
 `requirements.txt`). The model uses a `todo_write` tool to plan multi-step work; those items
