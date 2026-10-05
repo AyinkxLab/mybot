@@ -1,13 +1,15 @@
 import json
 from pathlib import Path
 
+import requests
+
 BASE_DIR = Path(__file__).resolve().parent
 AUTH_PATH = BASE_DIR / ".mybot_config.json"
 
 PROVIDERS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
+        "models": ["deepseek-flash", "deepseek-v4-pro"],
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -43,3 +45,18 @@ def save_auth(data: dict) -> None:
 
 def is_configured() -> bool:
     return bool(load_auth().get("api_key"))
+
+
+def list_models(base_url: str, api_key: str) -> list:
+    """Ask the provider which models this key can use. Empty list on failure."""
+    try:
+        resp = requests.get(
+            base_url.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return [item["id"] for item in data if isinstance(item, dict) and item.get("id")]
+    except Exception:
+        return []

@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 from agent import Agent
-from auth import PROVIDERS, is_configured, save_auth
+from auth import PROVIDERS, is_configured, list_models, save_auth
 from tools import set_approval_handler
 
 
@@ -90,6 +90,21 @@ class App:
         url_entry.grid(row=3, column=1, sticky="ew", padx=10, pady=6)
 
         dialog.columnconfigure(1, weight=1)
+
+        def fetch_models() -> None:
+            key = key_entry.get().strip()
+            url = url_entry.get().strip()
+            if not key or not url:
+                messagebox.showwarning("mybot", "Enter API key and base URL first.", parent=dialog)
+                return
+            fetched = list_models(url, key)
+            if fetched:
+                model_box.configure(values=fetched)
+                model_box.set(fetched[0])
+            else:
+                messagebox.showinfo("mybot", "Could not fetch models; keeping defaults.", parent=dialog)
+
+        tk.Button(dialog, text="Fetch", command=fetch_models).grid(row=2, column=2, padx=(4, 10))
 
         def on_provider(_event=None) -> None:
             preset = PROVIDERS.get(provider_box.get(), {})
