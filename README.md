@@ -39,9 +39,13 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 Opens on an opencode-style home screen: a centered logo, a centered prompt box, the active
 agent mode + model line, key hints, and a version tag. The first message switches to the chat
-view: top status bar (model, agent mode, token in/out, estimated cost), scrollable chat with
-per-role colored borders, streaming markdown, inline tool-call rows, an approval modal, and a
-live **todo** sidebar the model keeps updated.
+view:
+- scrollable chat with per-role colored borders and streaming markdown
+- inline tool-call rows and a per-message meta line (`▪ Build · model · 2.3s`)
+- a right sidebar showing the session title, **Context** (tokens, % used, $ spent),
+  **Tools**, and a live **todo** list the model keeps updated
+- a bottom status line (mode · model · provider, workspace, context, cost, `ctrl+p commands`)
+- an approval modal for gated actions
 
 Keys:
 `tab` agent mode · `ctrl+p` command palette · `ctrl+t` theme · `ctrl+o` toggle todos ·

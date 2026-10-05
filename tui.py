@@ -1,4 +1,5 @@
 import threading
+import time
 
 from rich.text import Text
 from textual import work
@@ -7,7 +8,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Footer, Input, Markdown, OptionList, Select, Static
+from textual.widgets import Button, Input, Markdown, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
 from agent import Agent
@@ -19,7 +20,7 @@ from auth import (
     save_auth,
 )
 from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
-from tools import get_todos, set_approval_handler, todo_write
+from tools import TOOL_SPECS, get_todos, set_approval_handler, todo_write
 
 
 def _short(text: str, limit: int = 120) -> str:
@@ -43,6 +44,12 @@ PRICING = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.0),
 }
+
+CONTEXT_WINDOWS = {
+    "deepseek-flash": 1_000_000,
+    "deepseek-v4-pro": 1_000_000,
+}
+DEFAULT_CONTEXT = 128_000
 
 MODES = {
     "build": "",
@@ -75,7 +82,7 @@ HELP = """[b]commands[/]
 
 [b]keys[/]
   tab        agent mode      ctrl+p   command palette
-  ctrl+t     theme           ctrl+o   toggle todo panel
+  ctrl+t     theme           ctrl+o   toggle sidebar
   ctrl+n     new session      esc      cancel current run
   ctrl+c     quit
 
@@ -155,18 +162,35 @@ class ToolView(Static):
         )
 
 
-class TodoPanel(Vertical):
+class Sidebar(Vertical):
     def compose(self) -> ComposeResult:
-        yield Static("todo", id="todo-title")
-        yield Static("", id="todo-body")
+        yield Static("", id="side-title")
+        yield Static("", id="side-context")
+        yield Static("", id="side-tools")
+        yield Static("", id="side-todo")
 
-    def refresh_todos(self, todos: list) -> None:
-        body = self.query_one("#todo-body", Static)
-        if not todos:
-            self.display = False
-            return
-        self.display = True
+    def set_title(self, text: str) -> None:
+        self.query_one("#side-title", Static).update(text or "new session")
+
+    def set_context(self, tokens: int, percent: float, cost: float) -> None:
         text = Text()
+        text.append("Context\n", style="bold #c9d1d9")
+        text.append(f"{tokens:,} tokens\n", style="#9ca3af")
+        text.append(f"{percent:.0f}% used\n", style="#9ca3af")
+        text.append(f"${cost:.2f} spent\n", style="#9ca3af")
+        self.query_one("#side-context", Static).update(text)
+
+    def set_tools(self, count: int) -> None:
+        text = Text()
+        text.append("Tools\n", style="bold #c9d1d9")
+        text.append(f"{count} enabled\n", style="#9ca3af")
+        self.query_one("#side-tools", Static).update(text)
+
+    def set_todos(self, todos: list) -> None:
+        text = Text()
+        text.append("todo\n", style="bold #c9d1d9")
+        if not todos:
+            text.append("none\n", style="#6b7280")
         for item in todos:
             status = item["status"]
             if status == "completed":
@@ -178,7 +202,7 @@ class TodoPanel(Vertical):
             else:
                 text.append("○ ", style="grey50")
                 text.append(item["content"] + "\n", style="grey70")
-        body.update(text)
+        self.query_one("#side-todo", Static).update(text)
 
 
 class Chooser(ModalScreen):
@@ -301,11 +325,16 @@ class ConnectScreen(ModalScreen):
 class MybotApp(App):
     CSS = """
     Screen { background: $background; color: $foreground; }
-    #topbar { height: 1; background: $panel; padding: 0 1; }
     #main { height: 1fr; }
     #chat { width: 1fr; padding: 0 1; }
-    #todos { width: 42; border-left: solid $surface; padding: 0 1; }
-    #todo-title { text-style: bold; color: $primary; height: 1; }
+    #sidebar { width: 40; border-left: solid $surface; padding: 1 1; }
+    Sidebar Static { height: auto; margin: 0 0 1 0; }
+    #side-title { text-style: bold; color: $foreground; }
+    .meta { color: $text-muted; padding: 0 0 0 3; height: auto; margin: 0 0 1 0; }
+    #bottom { dock: bottom; height: auto; }
+    #statusbar { height: 1; background: $panel; padding: 0 1; }
+    #status-left { width: 1fr; }
+    #status-right { width: auto; text-align: right; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
     .msg.you { border-left: thick $success; }
     .msg.mybot { border-left: thick $primary; }
@@ -313,7 +342,7 @@ class MybotApp(App):
     .msg.you .role { color: $success; }
     .msg.mybot .role { color: $primary; }
     .tool { color: $warning; padding: 0 0 0 2; height: auto; }
-    #prompt { dock: bottom; border: tall $surface; background: $panel; }
+    #prompt { border: tall $surface; background: $panel; }
     #prompt:focus { border: tall $primary; }
     ApprovalScreen { align: center middle; }
     #approval { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
@@ -345,7 +374,7 @@ class MybotApp(App):
         Binding("tab", "mode", "mode"),
         Binding("ctrl+p", "palette", "palette"),
         Binding("ctrl+t", "theme", "theme"),
-        Binding("ctrl+o", "toggle_todos", "todos"),
+        Binding("ctrl+o", "toggle_todos", "sidebar"),
         Binding("ctrl+n", "new", "new"),
         Binding("escape", "cancel", "cancel", show=False),
         Binding("ctrl+r", "reset", "reset", show=False),
@@ -357,25 +386,29 @@ class MybotApp(App):
         self.busy = False
         self.mode = "build"
         self.view = "home"
+        self.title = "new session"
         self.tokens_in = 0
         self.tokens_out = 0
+        self.context_tokens = 0
         self._last_tool = None
         self._cancel = threading.Event()
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="topbar")
         with Horizontal(id="main"):
             yield VerticalScroll(id="chat")
-            yield TodoPanel(id="todos")
+            yield Sidebar(id="sidebar")
         with Vertical(id="home"):
             yield Static(_logo(), id="logo")
             yield Input(placeholder=HOME_PLACEHOLDER, id="home-input")
             yield Static("", id="home-meta")
             yield Static(_hint_text(), id="home-hint")
             yield Static(_tip_text(), id="home-tip")
-        yield Input(placeholder="Ask mybot anything...", id="prompt")
+        with Vertical(id="bottom"):
+            yield Input(placeholder="Ask mybot anything...", id="prompt")
+            with Horizontal(id="statusbar"):
+                yield Static("", id="status-left")
+                yield Static("", id="status-right")
         yield Static(VERSION, id="version")
-        yield Footer()
 
     def on_mount(self) -> None:
         self._register_themes()
@@ -386,8 +419,11 @@ class MybotApp(App):
                 self.agent = Agent(system_prompt=self._system_prompt())
             except Exception as exc:
                 self._note(f"error: {exc}")
-        self._refresh_topbar()
-        self.query_one(TodoPanel).refresh_todos(get_todos())
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_title(self.title)
+        sidebar.set_tools(len(TOOL_SPECS))
+        sidebar.set_todos(get_todos())
+        self._refresh_status()
         self._set_view("home")
         self._refresh_home_meta()
 
@@ -471,25 +507,40 @@ class MybotApp(App):
     def _system_prompt(self) -> str:
         return SYSTEM_PROMPT + MODES.get(self.mode, "")
 
-    def _refresh_topbar(self) -> None:
+    def _refresh_status(self) -> None:
         model = self.agent.model if self.agent else "not connected"
-        bar = Text()
-        bar.append(" mybot ", style="bold #0b0b12 on #c4b5fd")
-        bar.append(f"  {model}", style="#9ca3af")
-        bar.append(f"  [{self.mode}]", style="#c4b5fd")
-        if self.tokens_in or self.tokens_out:
-            bar.append(
-                f"   ↑{_fmt_tokens(self.tokens_in)} ↓{_fmt_tokens(self.tokens_out)}",
-                style="#6b7280",
-            )
-            cost = self._cost()
-            if cost is not None:
-                bar.append(f"  ${cost:.4f}", style="#6b7280")
-        if self.busy:
-            bar.append("   working…", style="italic #eab308")
-        self.query_one("#topbar", Static).update(bar)
+        provider = load_auth().get("provider", "")
+        left = Text()
+        left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+        left.append(" auto · ", style="#8b93a7")
+        left.append(model, style="#e5e7eb")
+        if provider:
+            left.append(f" {provider}", style="#6b7280")
+        self.query_one("#status-left", Static).update(left)
 
-    def _cost(self) -> float:
+        cost = self._cost()
+        right = Text()
+        right.append(f"{WORKSPACE}   ", style="#6b7280")
+        if self.context_tokens:
+            right.append(
+                f"{self.context_tokens:,} ({self._context_percent():.0f}%)   ", style="#6b7280"
+            )
+        if cost is not None:
+            right.append(f"${cost:.4f}   ", style="#6b7280")
+        right.append("ctrl+p commands", style="#6b7280")
+        self.query_one("#status-right", Static).update(right)
+
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_context(self.context_tokens, self._context_percent(), cost or 0.0)
+
+    def _context_percent(self) -> float:
+        model = self.agent.model if self.agent else ""
+        window = CONTEXT_WINDOWS.get(model, DEFAULT_CONTEXT)
+        if not window:
+            return 0.0
+        return min(100.0, self.context_tokens / window * 100)
+
+    def _cost(self):
         model = self.agent.model if self.agent else ""
         price = PRICING.get(model)
         if price is None:
@@ -499,10 +550,8 @@ class MybotApp(App):
     def _set_view(self, view: str) -> None:
         self.view = view
         chat = view == "chat"
-        self.query_one("#topbar").display = chat
         self.query_one("#main").display = chat
-        self.query_one("#prompt").display = chat
-        self.query_one(Footer).display = chat
+        self.query_one("#bottom").display = chat
         self.query_one("#home").display = not chat
         self.query_one("#version").display = not chat
         if chat:
@@ -548,6 +597,9 @@ class MybotApp(App):
             return
         if self.view == "home":
             self._set_view("chat")
+        if self.title == "new session":
+            self.title = text[:40]
+            self.query_one(Sidebar).set_title(self.title)
         chat = self.query_one("#chat", VerticalScroll)
         chat.mount(MessageView("you", text))
         assistant = MessageView("mybot", "")
@@ -555,7 +607,7 @@ class MybotApp(App):
         self._scroll_end()
         self.busy = True
         self._cancel.clear()
-        self._refresh_topbar()
+        self._refresh_status()
         self._run_agent(text, assistant)
 
     def _command(self, text: str) -> None:
@@ -604,7 +656,7 @@ class MybotApp(App):
             except Exception as exc:
                 self._note(f"error: {exc}")
                 return
-            self._refresh_topbar()
+            self._refresh_status()
             self._refresh_home_meta()
             self._note(f"Connected: {self.agent.model}")
 
@@ -632,7 +684,7 @@ class MybotApp(App):
             except Exception as exc:
                 self._note(f"error: {exc}")
                 return
-            self._refresh_topbar()
+            self._refresh_status()
             self._refresh_home_meta()
             self._note(f"Model set to {choice}")
 
@@ -655,7 +707,7 @@ class MybotApp(App):
             self.mode = choice
             if self.agent is not None:
                 self.agent.messages[0]["content"] = self._system_prompt()
-            self._refresh_topbar()
+            self._refresh_status()
             self._refresh_home_meta()
             self._note(f"Agent mode: {choice}")
 
@@ -669,6 +721,7 @@ class MybotApp(App):
             self.call_from_thread(assistant.set_text, "Not connected - type /connect first.")
             self.call_from_thread(self._finish)
             return
+        start = time.monotonic()
         try:
             for event in self.agent.respond_stream(text):
                 if self._cancel.is_set():
@@ -689,17 +742,32 @@ class MybotApp(App):
                     )
                 elif kind == "final":
                     self.call_from_thread(
-                        assistant.set_text, event["text"] or assistant._text
+                        self._finalize,
+                        assistant,
+                        event["text"] or assistant._text,
+                        time.monotonic() - start,
                     )
         except Exception as exc:
             self.call_from_thread(assistant.set_text, f"error: {exc}")
         finally:
             self.call_from_thread(self._finish)
 
+    def _finalize(self, assistant: MessageView, text: str, elapsed: float) -> None:
+        assistant.set_text(text)
+        meta = Text()
+        meta.append("▪ ", style=ACCENT_SOFT)
+        meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
+        meta.append(" · ", style="#4b5563")
+        meta.append(self.agent.model if self.agent else "", style="#9ca3af")
+        meta.append(f" · {elapsed:.1f}s", style="#6b7280")
+        self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
+        self._scroll_end()
+
     def _add_usage(self, tokens_in: int, tokens_out: int) -> None:
         self.tokens_in += tokens_in
         self.tokens_out += tokens_out
-        self._refresh_topbar()
+        self.context_tokens = tokens_in
+        self._refresh_status()
 
     def _add_tool(self, name: str, args: str) -> None:
         view = ToolView(name, args)
@@ -713,11 +781,11 @@ class MybotApp(App):
         self._scroll_end()
 
     def _refresh_todos(self) -> None:
-        self.query_one(TodoPanel).refresh_todos(get_todos())
+        self.query_one(Sidebar).set_todos(get_todos())
 
     def _finish(self) -> None:
         self.busy = False
-        self._refresh_topbar()
+        self._refresh_status()
         self._scroll_end()
         self.query_one("#prompt", Input).focus()
 
@@ -746,16 +814,20 @@ class MybotApp(App):
             self.agent.reset()
         self.query_one("#chat", VerticalScroll).remove_children()
         todo_write([])
-        self.query_one(TodoPanel).refresh_todos([])
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_todos([])
+        sidebar.set_title("new session")
+        self.title = "new session"
         self.tokens_in = 0
         self.tokens_out = 0
-        self._refresh_topbar()
+        self.context_tokens = 0
+        self._refresh_status()
         self._set_view("home")
         self._refresh_home_meta()
 
     def action_toggle_todos(self) -> None:
-        panel = self.query_one(TodoPanel)
-        panel.display = not panel.display
+        sidebar = self.query_one(Sidebar)
+        sidebar.display = not sidebar.display
 
     def action_theme(self) -> None:
         self._choose_theme()
