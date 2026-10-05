@@ -48,6 +48,15 @@ def is_configured() -> bool:
     return bool(load_auth().get("api_key") or os.getenv("LLM_API_KEY"))
 
 
+def looks_like_api_key(value: str) -> bool:
+    text = value.strip()
+    if not text or " " in text or text in PROVIDERS:
+        return False
+    if text.startswith(("sk-", "sk_", "gsk_", "xai-", "or-", "r8_")):
+        return True
+    return len(text) >= 32 and any(c.isdigit() for c in text) and any(c.isalpha() for c in text)
+
+
 def list_models(base_url: str, api_key: str) -> list:
     """Ask the provider which models this key can use. Empty list on failure."""
     try:
