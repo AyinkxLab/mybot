@@ -32,13 +32,24 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 ## Running it
 
 - **Full-screen TUI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
-  An opencode-style interface: top status bar, scrollable chat with per-role colored borders,
-  streaming markdown, inline tool-call rows, a live **todo** sidebar the model keeps updated,
-  and a bottom prompt. Bindings: `ctrl+c` quit, `ctrl+r` reset, `ctrl+t` toggle the todo panel.
 - **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
-Commands: `/connect`, `/models`, `/reset`, `/exit` (`/help` in the TUI).
+### TUI
+
+An opencode-style interface: top status bar (model, agent mode, token in/out, estimated cost),
+scrollable chat with per-role colored borders, streaming markdown, inline tool-call rows, an
+approval modal, and a live **todo** sidebar the model keeps updated.
+
+Keys:
+`tab` agent mode · `ctrl+p` command palette · `ctrl+t` theme · `ctrl+o` toggle todos ·
+`ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
+
+Commands: `/connect`, `/models`, `/theme`, `/mode`, `/reset`, `/new`, `/exit` (`/help` in the TUI).
+
+Agent modes: **build** (default, full access) and **plan** (read-only; the model plans but does
+not modify files or run mutating commands). Themes: `mybot`, `dracula`, `tokyo-night`, `gruvbox`,
+`nord`, plus Textual's built-ins.
 
 The TUI is built with [Textual](https://textual.textualize.io/) (`textual` + `rich` in
 `requirements.txt`). The model uses a `todo_write` tool to plan multi-step work; those items

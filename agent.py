@@ -43,14 +43,27 @@ class Agent:
         for _ in range(MAX_TOOL_ROUNDS):
             content_parts = []
             tool_calls = {}
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.messages,
-                tools=TOOL_SPECS,
-                tool_choice="auto",
-                stream=True,
-            )
+            request = {
+                "model": self.model,
+                "messages": self.messages,
+                "tools": TOOL_SPECS,
+                "tool_choice": "auto",
+                "stream": True,
+            }
+            try:
+                stream = self.client.chat.completions.create(
+                    **request, stream_options={"include_usage": True}
+                )
+            except Exception:
+                stream = self.client.chat.completions.create(**request)
             for chunk in stream:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    yield {
+                        "type": "usage",
+                        "input": getattr(usage, "prompt_tokens", 0) or 0,
+                        "output": getattr(usage, "completion_tokens", 0) or 0,
+                    }
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
