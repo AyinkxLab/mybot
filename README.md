@@ -68,8 +68,10 @@ can be toggled with `/thinking`. `/details` expands tool args/results. A spinner
 waiting for the first token.
 
 Agent modes: **build** (default, full access) and **plan** (read-only; the model plans but does
-not modify files or run mutating commands). Themes: `mybot`, `dracula`, `tokyo-night`, `gruvbox`,
-`nord`, plus Textual's built-ins.
+not modify files or run mutating commands).
+
+Themes (default **opencode**): `opencode`, `mybot`, `catppuccin`, `one-dark`, `matrix`,
+`dracula`, `tokyo-night`, `gruvbox`, `nord`, plus Textual's built-ins. Switch with `/theme`.
 
 The TUI is built with [Textual](https://textual.textualize.io/) (`textual` + `rich` in
 `requirements.txt`). The model uses a `todo_write` tool to plan multi-step work; those items

@@ -255,6 +255,7 @@ class Sidebar(Vertical):
         yield Static("", id="side-title")
         yield Static("", id="side-context")
         yield Static("", id="side-tools")
+        yield Static("", id="side-lsp")
         yield Static("", id="side-todo")
 
     def set_title(self, text: str) -> None:
@@ -273,6 +274,12 @@ class Sidebar(Vertical):
         text.append("Tools\n", style="bold #c9d1d9")
         text.append(f"{count} enabled\n", style="#9ca3af")
         self.query_one("#side-tools", Static).update(text)
+
+    def set_lsp(self, message: str) -> None:
+        text = Text()
+        text.append("LSP\n", style="bold #c9d1d9")
+        text.append(f"{message}\n", style="#9ca3af")
+        self.query_one("#side-lsp", Static).update(text)
 
     def set_todos(self, todos: list) -> None:
         text = Text()
@@ -424,11 +431,11 @@ class MybotApp(App):
     #status-left { width: 1fr; }
     #status-right { width: auto; text-align: right; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
-    .msg.you { border-left: thick $success; }
-    .msg.mybot { border-left: thick $primary; }
+    .msg.you { border-left: thick $primary; }
+    .msg.mybot { border-left: none; }
     .role { height: 1; text-style: bold; color: $text-muted; }
-    .msg.you .role { color: $success; }
-    .msg.mybot .role { color: $primary; }
+    .msg.you .role { color: $primary; }
+    .msg.mybot .role { color: $text-muted; }
     .tool { color: $warning; padding: 0 0 0 2; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; border-left: thick #4b5563; }
     .think-head { color: #6b7280; height: 1; }
@@ -448,8 +455,8 @@ class MybotApp(App):
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
     #home { height: 1fr; align: center middle; }
     #logo { width: 72; text-align: center; height: auto; }
-    #home-input { width: 72; border: solid #30303a; border-left: thick #4c8bf5; background: #14141b; color: #c9d1d9; }
-    #home-input:focus { border: solid #3a3a48; border-left: thick #4c8bf5; }
+    #home-input { width: 72; border: solid $surface; border-left: thick $primary; background: $panel; color: $foreground; }
+    #home-input:focus { border: solid $primary; border-left: thick $primary; }
     #home-input .input--placeholder, #prompt .input--placeholder { color: #6b7280; }
     #home-meta { width: 72; text-align: center; margin: 1 0 0 0; height: auto; }
     #home-hint { width: 72; text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
@@ -522,7 +529,7 @@ class MybotApp(App):
 
     def on_mount(self) -> None:
         self._register_themes()
-        self.theme = "mybot"
+        self.theme = "opencode"
         set_approval_handler(self._approve)
         if is_configured():
             try:
@@ -533,12 +540,73 @@ class MybotApp(App):
         sidebar = self.query_one(Sidebar)
         sidebar.set_title(self.title)
         sidebar.set_tools(len(TOOL_SPECS))
+        sidebar.set_lsp("LSPs are disabled")
         sidebar.set_todos(get_todos())
         self._refresh_status()
         self._set_view("home")
         self._refresh_home_meta()
 
     def _register_themes(self) -> None:
+        self.register_theme(
+            Theme(
+                "opencode",
+                primary="#4c8bf5",
+                secondary="#7dcfff",
+                accent="#6ba3ff",
+                background="#0a0a0a",
+                surface="#141414",
+                panel="#141414",
+                success="#4ade80",
+                warning="#fbbf24",
+                error="#f87171",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "catppuccin",
+                primary="#cba6f7",
+                secondary="#89b4fa",
+                accent="#94e2d5",
+                background="#1e1e2e",
+                surface="#313244",
+                panel="#181825",
+                success="#a6e3a1",
+                warning="#f9e2af",
+                error="#f38ba8",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "one-dark",
+                primary="#61afef",
+                secondary="#c678dd",
+                accent="#56b6c2",
+                background="#282c34",
+                surface="#3a3f4b",
+                panel="#21252b",
+                success="#98c379",
+                warning="#e5c07b",
+                error="#e06c75",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "matrix",
+                primary="#00ff41",
+                secondary="#00cc33",
+                accent="#33ff77",
+                background="#0a0f0a",
+                surface="#0f1a0f",
+                panel="#0a0f0a",
+                success="#00ff41",
+                warning="#aaff00",
+                error="#ff3333",
+                dark=True,
+            )
+        )
         self.register_theme(
             Theme(
                 "mybot",
