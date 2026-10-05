@@ -48,10 +48,18 @@ view:
 - an approval modal for gated actions
 
 Keys:
-`tab` agent mode · `ctrl+p` command palette · `ctrl+t` theme · `ctrl+o` toggle todos ·
+`tab` agent mode · `ctrl+p` command palette · `ctrl+x` leader (`n` new, `q` quit, `t` theme,
+`m` models, `c` compact, `x` export) · `ctrl+t` theme · `ctrl+o` toggle sidebar ·
 `ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
 
-Commands: `/connect`, `/models`, `/theme`, `/mode`, `/reset`, `/new`, `/exit` (`/help` in the TUI).
+Commands: `/connect`, `/models`, `/theme` (`/themes`), `/mode`, `/thinking`, `/details`,
+`/compact` (`/summarize`), `/export`, `/new` (`/clear`), `/reset`, `/exit` (`/help` in the TUI).
+
+Prefixes: `!command` runs a shell command; `@path` attaches a file's contents to your message.
+
+For models that stream reasoning (e.g. `deepseek-reasoner`), a **Thinking** block is shown and
+can be toggled with `/thinking`. `/details` expands tool args/results. A spinner shows while
+waiting for the first token.
 
 Agent modes: **build** (default, full access) and **plan** (read-only; the model plans but does
 not modify files or run mutating commands). Themes: `mybot`, `dracula`, `tokyo-night`, `gruvbox`,

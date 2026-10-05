@@ -20,7 +20,14 @@ from auth import (
     save_auth,
 )
 from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
-from tools import TOOL_SPECS, get_todos, set_approval_handler, todo_write
+from tools import (
+    TOOL_SPECS,
+    get_todos,
+    read_file,
+    run_shell,
+    set_approval_handler,
+    todo_write,
+)
 
 
 def _short(text: str, limit: int = 120) -> str:
@@ -65,6 +72,10 @@ COMMANDS = [
     ("switch model", "models"),
     ("change theme", "theme"),
     ("change agent mode", "mode"),
+    ("toggle thinking blocks", "thinking"),
+    ("toggle tool details", "details"),
+    ("compact session", "compact"),
+    ("export conversation", "export"),
     ("new session", "new"),
     ("clear history", "reset"),
     ("help", "help"),
@@ -72,19 +83,27 @@ COMMANDS = [
 ]
 
 HELP = """[b]commands[/]
-  /connect   set provider, key and model
-  /models    switch the model
-  /theme     change theme
-  /mode      switch agent mode (build / plan)
-  /reset     clear conversation history
-  /help      show this
-  /exit      quit
+  /connect     set provider, key and model
+  /models      switch the model
+  /theme       change theme (alias /themes)
+  /mode        switch agent mode (build / plan)
+  /thinking    show/hide reasoning blocks
+  /details     expand/collapse tool output
+  /compact     summarize the session (alias /summarize)
+  /export      write the conversation to a Markdown file
+  /new         new session (alias /clear)
+  /reset       clear conversation history
+  /help        show this
+  /exit        quit
+
+[b]prefixes[/]
+  !cmd         run a shell command
+  @file        attach file contents to your message
 
 [b]keys[/]
-  tab        agent mode      ctrl+p   command palette
-  ctrl+t     theme           ctrl+o   toggle sidebar
-  ctrl+n     new session      esc      cancel current run
-  ctrl+c     quit
+  tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
+  ctrl+x  leader (n q t m c x)                       ctrl+t  theme
+  ctrl+n  new session    esc     cancel run          ctrl+c  quit
 
 The model plans multi-step work with a todo list shown in the sidebar."""
 
@@ -150,16 +169,63 @@ class MessageView(Vertical):
 
 
 class ToolView(Static):
-    def __init__(self, name: str, args: str) -> None:
+    def __init__(self, name: str, args: str, detailed: bool = False) -> None:
         super().__init__(classes="tool")
         self.tool_name = name
         self.tool_args = args
-        self.update(f"⚙ {name}  {_short(args)}")
+        self._result = ""
+        self._detailed = detailed
+        self._refresh_content()
+
+    def _refresh_content(self) -> None:
+        if self._detailed:
+            self.update(
+                f"⚙ {self.tool_name}\n  args: {self.tool_args}\n  → {self._result}"
+            )
+        else:
+            tail = f"  →  {_short(self._result, 90)}" if self._result else ""
+            self.update(f"⚙ {self.tool_name}  {_short(self.tool_args, 60)}{tail}")
 
     def set_result(self, result: str) -> None:
-        self.update(
-            f"⚙ {self.tool_name}  {_short(self.tool_args, 60)}  →  {_short(result, 90)}"
-        )
+        self._result = result
+        self._refresh_content()
+
+    def set_detailed(self, detailed: bool) -> None:
+        self._detailed = detailed
+        self._refresh_content()
+
+
+class ThinkingView(Static):
+    def __init__(self) -> None:
+        super().__init__(classes="thinking")
+        self._text = ""
+        self._start = time.monotonic()
+        self._refresh_content()
+
+    def _refresh_content(self, head: str = "✻ Thinking…") -> None:
+        content = Text()
+        content.append(head + "\n", style="#6b7280")
+        content.append(self._text, style="italic #8b93a7")
+        self.update(content)
+
+    def append(self, chunk: str) -> None:
+        self._text += chunk
+        self._refresh_content()
+
+    def finish(self) -> None:
+        self._refresh_content(f"✻ Thought for {time.monotonic() - self._start:.1f}s")
+
+
+class Spinner(Static):
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def on_mount(self) -> None:
+        self._i = 0
+        self.set_interval(0.1, self._tick)
+
+    def _tick(self) -> None:
+        self._i = (self._i + 1) % len(self.FRAMES)
+        self.update(f"[#6b7280]{self.FRAMES[self._i]} thinking…[/]")
 
 
 class Sidebar(Vertical):
@@ -342,6 +408,9 @@ class MybotApp(App):
     .msg.you .role { color: $success; }
     .msg.mybot .role { color: $primary; }
     .tool { color: $warning; padding: 0 0 0 2; height: auto; }
+    .thinking { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; border-left: thick #4b5563; }
+    .think-head { color: #6b7280; height: 1; }
+    .think-body { color: #8b93a7; height: auto; }
     #prompt { border: tall $surface; background: $panel; }
     #prompt:focus { border: tall $primary; }
     ApprovalScreen { align: center middle; }
@@ -373,6 +442,7 @@ class MybotApp(App):
         Binding("ctrl+c", "quit", "quit"),
         Binding("tab", "mode", "mode"),
         Binding("ctrl+p", "palette", "palette"),
+        Binding("ctrl+x", "leader", "leader", show=False),
         Binding("ctrl+t", "theme", "theme"),
         Binding("ctrl+o", "toggle_todos", "sidebar"),
         Binding("ctrl+n", "new", "new"),
@@ -390,7 +460,14 @@ class MybotApp(App):
         self.tokens_in = 0
         self.tokens_out = 0
         self.context_tokens = 0
+        self.show_thinking = True
+        self.show_details = False
         self._last_tool = None
+        self._thinking = None
+        self._thinking_views = []
+        self._tool_views = []
+        self._spinner = None
+        self._leader = False
         self._cancel = threading.Event()
 
     def compose(self) -> ComposeResult:
@@ -602,13 +679,41 @@ class MybotApp(App):
             self.query_one(Sidebar).set_title(self.title)
         chat = self.query_one("#chat", VerticalScroll)
         chat.mount(MessageView("you", text))
+        if text.startswith("!"):
+            self._run_bash(text[1:].strip())
+            return
         assistant = MessageView("mybot", "")
         chat.mount(assistant)
         self._scroll_end()
         self.busy = True
         self._cancel.clear()
+        self._thinking = None
+        self._start_spinner()
         self._refresh_status()
-        self._run_agent(text, assistant)
+        self._run_agent(self._expand_refs(text), assistant)
+
+    def _expand_refs(self, text: str) -> str:
+        refs = [token[1:] for token in text.split() if token.startswith("@") and len(token) > 1]
+        blocks = []
+        for ref in refs:
+            content = read_file(ref)
+            if not content.startswith("ERROR"):
+                blocks.append(f"--- {ref} ---\n{content}")
+        return text + "\n\n" + "\n\n".join(blocks) if blocks else text
+
+    def _start_spinner(self) -> None:
+        self._stop_spinner()
+        self._spinner = Spinner()
+        self.query_one("#chat", VerticalScroll).mount(self._spinner)
+        self._scroll_end()
+
+    def _stop_spinner(self) -> None:
+        if self._spinner is not None:
+            try:
+                self._spinner.remove()
+            except Exception:
+                pass
+            self._spinner = None
 
     def _command(self, text: str) -> None:
         command = text.split()[0].lower()
@@ -616,10 +721,17 @@ class MybotApp(App):
             "/connect": "connect",
             "/models": "models",
             "/theme": "theme",
+            "/themes": "theme",
             "/mode": "mode",
+            "/thinking": "thinking",
+            "/details": "details",
+            "/compact": "compact",
+            "/summarize": "compact",
+            "/export": "export",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
+            "/clear": "new",
             "/exit": "quit",
             "/quit": "quit",
         }
@@ -642,6 +754,14 @@ class MybotApp(App):
             self.action_new()
         elif action == "reset":
             self.action_reset()
+        elif action == "thinking":
+            self._toggle_thinking()
+        elif action == "details":
+            self._toggle_details()
+        elif action == "compact":
+            self._compact()
+        elif action == "export":
+            self._export()
         elif action == "help":
             self._note(HELP)
         elif action == "quit":
@@ -728,9 +848,15 @@ class MybotApp(App):
                     self.call_from_thread(assistant.append, "\n\n_\\[cancelled]_")
                     break
                 kind = event["type"]
-                if kind == "delta":
+                if kind == "reasoning":
+                    self.call_from_thread(self._stop_spinner)
+                    if self.show_thinking:
+                        self.call_from_thread(self._add_reasoning, event["text"])
+                elif kind == "delta":
+                    self.call_from_thread(self._stop_spinner)
                     self.call_from_thread(assistant.append, event["text"])
                 elif kind == "tool":
+                    self.call_from_thread(self._stop_spinner)
                     self.call_from_thread(self._add_tool, event["name"], event["args"])
                 elif kind == "tool_result":
                     self.call_from_thread(self._tool_result, event["result"])
@@ -769,9 +895,18 @@ class MybotApp(App):
         self.context_tokens = tokens_in
         self._refresh_status()
 
+    def _add_reasoning(self, chunk: str) -> None:
+        if self._thinking is None:
+            self._thinking = ThinkingView()
+            self._thinking_views.append(self._thinking)
+            self.query_one("#chat", VerticalScroll).mount(self._thinking)
+        self._thinking.append(chunk)
+        self._scroll_end()
+
     def _add_tool(self, name: str, args: str) -> None:
-        view = ToolView(name, args)
+        view = ToolView(name, args, detailed=self.show_details)
         self._last_tool = view
+        self._tool_views.append(view)
         self.query_one("#chat", VerticalScroll).mount(view)
         self._scroll_end()
 
@@ -780,10 +915,35 @@ class MybotApp(App):
             self._last_tool.set_result(result)
         self._scroll_end()
 
+    @work(thread=True)
+    def _run_bash(self, command: str) -> None:
+        view = ToolView("bash", command)
+        self.call_from_thread(self._mount_tool, view)
+        result = run_shell(command)
+        self.call_from_thread(view.set_result, result)
+        self.call_from_thread(self._bash_context, command, result)
+
+    def _mount_tool(self, view: ToolView) -> None:
+        self._last_tool = view
+        self._tool_views.append(view)
+        self.query_one("#chat", VerticalScroll).mount(view)
+        self._scroll_end()
+
+    def _bash_context(self, command: str, result: str) -> None:
+        if self.agent is not None:
+            self.agent.messages.append(
+                {"role": "user", "content": f"(shell) {command}\n{result}"}
+            )
+        self._scroll_end()
+
     def _refresh_todos(self) -> None:
         self.query_one(Sidebar).set_todos(get_todos())
 
     def _finish(self) -> None:
+        self._stop_spinner()
+        if self._thinking is not None:
+            self._thinking.finish()
+            self._thinking = None
         self.busy = False
         self._refresh_status()
         self._scroll_end()
@@ -803,6 +963,65 @@ class MybotApp(App):
         self.call_from_thread(ask)
         event.wait()
         return result["ok"]
+
+    def _toggle_thinking(self) -> None:
+        self.show_thinking = not self.show_thinking
+        for view in self._thinking_views:
+            view.display = self.show_thinking
+        self._note(f"Thinking blocks: {'shown' if self.show_thinking else 'hidden'}")
+
+    def _toggle_details(self) -> None:
+        self.show_details = not self.show_details
+        for view in self._tool_views:
+            view.set_detailed(self.show_details)
+        self._note(f"Tool details: {'expanded' if self.show_details else 'compact'}")
+
+    @work(thread=True)
+    def _compact(self) -> None:
+        if self.agent is None:
+            self.call_from_thread(self._note, "Connect first with /connect.")
+            return
+        try:
+            summary = self.agent.compact()
+        except Exception as exc:
+            self.call_from_thread(self._note, f"compact error: {exc}")
+            return
+        self.call_from_thread(self._note, f"Compacted into a summary.\n\n{summary}")
+
+    def _export(self) -> None:
+        parts = []
+        for child in self.query_one("#chat", VerticalScroll).children:
+            if isinstance(child, MessageView):
+                parts.append(f"## {child.role_name}\n\n{child._text}\n")
+            elif isinstance(child, ToolView):
+                parts.append(f"> tool `{child.tool_name}`: {child.tool_args}\n")
+        try:
+            out = WORKSPACE / f"mybot-export-{int(time.time())}.md"
+            out.write_text("\n".join(parts), encoding="utf-8")
+        except Exception as exc:
+            self._note(f"export error: {exc}")
+            return
+        self._note(f"Exported conversation to {out}")
+
+    def action_leader(self) -> None:
+        self._leader = True
+        self._note("leader: n new · q quit · t theme · m models · c compact · x export")
+
+    def on_key(self, event) -> None:
+        if not getattr(self, "_leader", False):
+            return
+        self._leader = False
+        event.stop()
+        action = {
+            "n": "new",
+            "q": "quit",
+            "t": "theme",
+            "m": "models",
+            "c": "compact",
+            "x": "export",
+        }.get(event.key)
+        if action:
+            self._run_command(action)
 
     def action_reset(self) -> None:
         if self.agent is not None:
