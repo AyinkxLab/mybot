@@ -1,56 +1,92 @@
-import sys
+import threading
+import time
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.styles import Style
-from rich.console import Console
-from rich.live import Live
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
-from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.theme import Theme
+from textual.widgets import Button, Input, Markdown, OptionList, Select, Static
+from textual.widgets.option_list import Option
 
 from agent import Agent
 from auth import (
-    AUTH_PATH,
     PROVIDERS,
     is_configured,
     list_models,
     load_auth,
-    looks_like_api_key,
     save_auth,
 )
-from config import REQUIRE_APPROVAL, WORKSPACE
-from tools import set_approval_handler
+from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
+from tools import TOOL_SPECS, get_todos, set_approval_handler, todo_write
 
 
-def _setup_console() -> bool:
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-            ctypes.windll.kernel32.SetConsoleCP(65001)
-        except Exception:
-            pass
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
-    encoding = (getattr(sys.stdout, "encoding", "") or "").lower()
-    return "utf" in encoding
+def _short(text: str, limit: int = 120) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-UNICODE = _setup_console()
-PROMPT_CHAR = "❯ " if UNICODE else "> "
-TOOL_CHAR = "⚙" if UNICODE else "*"
-RESULT_CHAR = "↳" if UNICODE else "->"
-DOT = "·" if UNICODE else "-"
-ELLIPSIS = "…" if UNICODE else "..."
+def _fmt_tokens(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
 
-console = Console(highlight=False)
+
+PRICING = {
+    "deepseek-flash": (0.30, 1.20),
+    "deepseek-v4-pro": (1.32, 3.96),
+    "deepseek-chat": (0.27, 1.10),
+    "deepseek-reasoner": (0.55, 2.19),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.0),
+}
+
+CONTEXT_WINDOWS = {
+    "deepseek-flash": 1_000_000,
+    "deepseek-v4-pro": 1_000_000,
+}
+DEFAULT_CONTEXT = 128_000
+
+MODES = {
+    "build": "",
+    "plan": (
+        "\n\nMODE: plan. Investigate and produce a plan with todo_write, but do NOT modify "
+        "files, run mutating shell commands, push, or create scheduled tasks. Wait for the "
+        "user to switch to build mode before making any changes."
+    ),
+}
+
+COMMANDS = [
+    ("connect a provider", "connect"),
+    ("switch model", "models"),
+    ("change theme", "theme"),
+    ("change agent mode", "mode"),
+    ("new session", "new"),
+    ("clear history", "reset"),
+    ("help", "help"),
+    ("quit", "quit"),
+]
+
+HELP = """[b]commands[/]
+  /connect   set provider, key and model
+  /models    switch the model
+  /theme     change theme
+  /mode      switch agent mode (build / plan)
+  /reset     clear conversation history
+  /help      show this
+  /exit      quit
+
+[b]keys[/]
+  tab        agent mode      ctrl+p   command palette
+  ctrl+t     theme           ctrl+o   toggle sidebar
+  ctrl+n     new session      esc      cancel current run
+  ctrl+c     quit
+
+The model plans multi-step work with a todo list shown in the sidebar."""
 
 BANNER = [
     "███╗   ███╗██╗   ██╗██████╗  ██████╗ ████████╗",
@@ -60,288 +96,760 @@ BANNER = [
     "██║ ╚═╝ ██║   ██║   ██████╔╝╚██████╔╝   ██║   ",
     "╚═╝     ╚═╝   ╚═╝   ╚═════╝  ╚═════╝    ╚═╝   ",
 ]
-ASCII_BANNER = [
-    " __  __ _  _ ___  ___ _____ ",
-    "|  \\/  | || | _ )/ _ \\_   _|",
-    "| |\\/| | || | _ \\ (_) || |  ",
-    "|_|  |_|\\_, |___/\\___/ |_|  ",
-    "        |__/                ",
-]
-BANNER_COLORS = ["#22d3ee", "#38bdf8", "#60a5fa", "#818cf8", "#a78bfa", "#c084fc"]
-
-PROMPT_STYLE = Style.from_dict(
-    {
-        "prompt": "ansicyan bold",
-        "bottom-toolbar": "bg:#161622 #8b93b0",
-    }
-)
+ACCENT = "#4c8bf5"
+ACCENT_SOFT = "#6ba3ff"
+VERSION = "mybot 0.1.0"
+HOME_PLACEHOLDER = 'Ask anything...  "What is the tech stack of this project?"'
 
 
-def show_banner() -> None:
-    console.print()
-    lines = BANNER if UNICODE else ASCII_BANNER
-    for index, line in enumerate(lines):
-        console.print(Text(line, style=f"bold {BANNER_COLORS[index % len(BANNER_COLORS)]}"))
-    console.print(
-        Text("  local AI assistant", style="italic #6b7280"),
-        Text(f"  {DOT}  /connect /models /reset /exit", style="#6b7280"),
-    )
-    console.print(Rule(style="#1f2937"))
+def _logo() -> Text:
+    light, dark = "#e8e8e8", "#8a8a8a"
+    text = Text(justify="center")
+    for line in BANNER:
+        half = len(line) // 2
+        text.append(line[:half], style=f"bold {light}")
+        text.append(line[half:], style=f"bold {dark}")
+        text.append("\n")
+    return text
 
 
-def user_panel(text: str) -> Panel:
-    return Panel(
-        Text(text, style="bold white"),
-        title="[bold green]you[/]",
-        title_align="right",
-        border_style="#22c55e",
-        padding=(0, 1),
-    )
+def _hint_text() -> Text:
+    text = Text(justify="center")
+    text.append("tab", style="bold #c9d1d9")
+    text.append(" agents        ", style="#6b7280")
+    text.append("ctrl+p", style="bold #c9d1d9")
+    text.append(" commands", style="#6b7280")
+    return text
 
 
-def assistant_panel(text: str) -> Panel:
-    body = Markdown(text, code_theme="monokai") if text.strip() else Text(ELLIPSIS, style="dim")
-    return Panel(
-        body,
-        title="[bold magenta]mybot[/]",
-        title_align="left",
-        border_style="#818cf8",
-        padding=(0, 1),
-    )
+def _tip_text() -> Text:
+    text = Text(justify="center")
+    text.append("● ", style="#eab308")
+    text.append("Tip   ", style="bold #c9d1d9")
+    text.append("Set REQUIRE_APPROVAL=true to gate risky commands", style="#6b7280")
+    return text
 
 
-def _short(text: str, limit: int = 140) -> str:
-    text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[:limit] + ELLIPSIS
+class MessageView(Vertical):
+    def __init__(self, role: str, text: str = "") -> None:
+        super().__init__(classes=f"msg {role}")
+        self._text = text
+        self.role_name = role
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.role_name, classes="role")
+        yield Markdown(self._text, classes="body")
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.query_one(Markdown).update(text or "")
+
+    def append(self, chunk: str) -> None:
+        self._text += chunk
+        self.query_one(Markdown).update(self._text)
 
 
-class StreamView:
-    def __init__(self) -> None:
-        self.live = None
-        self.buffer = ""
+class ToolView(Static):
+    def __init__(self, name: str, args: str) -> None:
+        super().__init__(classes="tool")
+        self.tool_name = name
+        self.tool_args = args
+        self.update(f"⚙ {name}  {_short(args)}")
 
-    def _start(self) -> None:
-        if self.live is None:
-            self.live = Live(
-                Spinner("dots", text="[dim]thinking...[/]"),
-                console=console,
-                refresh_per_second=15,
-                vertical_overflow="visible",
-                transient=True,
-            )
-            self.live.start()
-
-    def _stop(self) -> None:
-        if self.live is not None:
-            self.live.stop()
-            self.live = None
-
-    def handle(self, event: dict) -> None:
-        kind = event["type"]
-        if kind == "delta":
-            self._start()
-            self.buffer += event["text"]
-            self.live.update(assistant_panel(self.buffer))
-        elif kind == "tool":
-            self._stop()
-            if self.buffer:
-                console.print(assistant_panel(self.buffer))
-                self.buffer = ""
-            console.print(
-                f"[bold yellow]{TOOL_CHAR} {event['name']}[/] [dim]{_short(event['args'])}[/]"
-            )
-        elif kind == "tool_result":
-            console.print(f"  [dim]{RESULT_CHAR} {_short(event['result'], 160)}[/]")
-        elif kind == "final":
-            self._stop()
-            text = event["text"] or self.buffer
-            if text:
-                console.print(assistant_panel(text))
-            self.buffer = ""
-
-    def close(self) -> None:
-        self._stop()
-
-
-def _approve(action: str) -> bool:
-    console.print(
-        Panel(
-            Text(action, style="yellow"),
-            title="[bold yellow]approval needed[/]",
-            border_style="yellow",
-            padding=(0, 1),
+    def set_result(self, result: str) -> None:
+        self.update(
+            f"⚙ {self.tool_name}  {_short(self.tool_args, 60)}  →  {_short(result, 90)}"
         )
-    )
-    try:
-        return Confirm.ask("[yellow]allow?[/]", default=False)
-    except (EOFError, KeyboardInterrupt):
-        return False
 
 
-set_approval_handler(_approve)
+class Sidebar(Vertical):
+    def compose(self) -> ComposeResult:
+        yield Static("", id="side-title")
+        yield Static("", id="side-context")
+        yield Static("", id="side-tools")
+        yield Static("", id="side-todo")
+
+    def set_title(self, text: str) -> None:
+        self.query_one("#side-title", Static).update(text or "new session")
+
+    def set_context(self, tokens: int, percent: float, cost: float) -> None:
+        text = Text()
+        text.append("Context\n", style="bold #c9d1d9")
+        text.append(f"{tokens:,} tokens\n", style="#9ca3af")
+        text.append(f"{percent:.0f}% used\n", style="#9ca3af")
+        text.append(f"${cost:.2f} spent\n", style="#9ca3af")
+        self.query_one("#side-context", Static).update(text)
+
+    def set_tools(self, count: int) -> None:
+        text = Text()
+        text.append("Tools\n", style="bold #c9d1d9")
+        text.append(f"{count} enabled\n", style="#9ca3af")
+        self.query_one("#side-tools", Static).update(text)
+
+    def set_todos(self, todos: list) -> None:
+        text = Text()
+        text.append("todo\n", style="bold #c9d1d9")
+        if not todos:
+            text.append("none\n", style="#6b7280")
+        for item in todos:
+            status = item["status"]
+            if status == "completed":
+                text.append("✔ ", style="green")
+                text.append(item["content"] + "\n", style="dim strike")
+            elif status == "in_progress":
+                text.append("◐ ", style="yellow")
+                text.append(item["content"] + "\n", style="bold white")
+            else:
+                text.append("○ ", style="grey50")
+                text.append(item["content"] + "\n", style="grey70")
+        self.query_one("#side-todo", Static).update(text)
 
 
-def _connect() -> bool:
-    names = list(PROVIDERS)
-    for index, name in enumerate(names, 1):
-        console.print(f"  [cyan]{index}[/]) {name}")
+class Chooser(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
 
-    pre_key = ""
-    raw = Prompt.ask("provider (or paste your API key)", default="deepseek").strip()
-    if raw.isdigit() and 1 <= int(raw) <= len(names):
-        provider = names[int(raw) - 1]
-    elif raw.lower() in PROVIDERS:
-        provider = raw.lower()
-    elif looks_like_api_key(raw):
-        provider = "deepseek"
-        pre_key = raw
-        console.print(f"[yellow]that looks like a key - using provider[/] [bold]{provider}[/]")
-    else:
-        provider = raw.lower()
-        while provider not in PROVIDERS:
-            console.print(f"[red]unknown provider:[/] {provider}")
-            provider = Prompt.ask("provider", default="deepseek").strip().lower()
+    def __init__(self, title: str, options: list) -> None:
+        super().__init__()
+        self.title = title
+        self.options = options
 
-    preset = PROVIDERS[provider]
-    base_url = Prompt.ask("base URL", default=preset.get("base_url", ""))
-    api_key = pre_key or Prompt.ask("API key", password=True).strip()
-    if not api_key:
-        console.print("[red]no key entered, nothing saved[/]")
-        return False
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette"):
+            yield Static(self.title, id="palette-title")
+            yield OptionList(
+                *(Option(label, id=str(index)) for index, (label, _) in enumerate(self.options)),
+                id="palette-list",
+            )
 
-    console.print("[dim]asking the provider for available models...[/]")
-    models = list_models(base_url, api_key) or preset.get("models", [])
-    if not models:
-        model = Prompt.ask("model").strip()
-    else:
-        for index, name in enumerate(models, 1):
-            console.print(f"  [cyan]{index}[/]) {name}")
-        pick = Prompt.ask("model", default="1").strip()
-        if pick.isdigit() and 1 <= int(pick) <= len(models):
-            model = models[int(pick) - 1]
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(self.options[int(event.option.id)][1])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ApprovalScreen(ModalScreen):
+    BINDINGS = [Binding("escape", "deny", "deny")]
+
+    def __init__(self, action: str) -> None:
+        super().__init__()
+        self.action = action
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="approval"):
+            yield Static("approval needed", id="approval-title")
+            yield Static(self.action, id="approval-body")
+            with Horizontal(id="approval-buttons"):
+                yield Button("Deny", variant="error", id="deny")
+                yield Button("Allow", variant="success", id="allow")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "allow")
+
+    def action_deny(self) -> None:
+        self.dismiss(False)
+
+
+class ConnectScreen(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="connect"):
+            yield Static("connect provider", id="connect-title")
+            yield Static("provider", classes="field-label")
+            yield Select(
+                [(name, name) for name in PROVIDERS],
+                value="deepseek",
+                allow_blank=False,
+                id="provider",
+            )
+            yield Static("API key", classes="field-label")
+            yield Input(password=True, placeholder="sk-...", id="key")
+            yield Static("base URL", classes="field-label")
+            yield Input(value=PROVIDERS["deepseek"]["base_url"], id="base_url")
+            yield Static("model", classes="field-label")
+            with Horizontal(id="model-row"):
+                yield Select(
+                    [(m, m) for m in PROVIDERS["deepseek"]["models"]],
+                    value=PROVIDERS["deepseek"]["models"][0],
+                    allow_blank=False,
+                    id="model",
+                )
+                yield Button("Fetch", id="fetch")
+            with Horizontal(id="connect-buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Save", variant="success", id="save")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "provider":
+            return
+        preset = PROVIDERS.get(event.value, {})
+        self.query_one("#base_url", Input).value = preset.get("base_url", "")
+        models = preset.get("models", [])
+        select = self.query_one("#model", Select)
+        select.set_options([(m, m) for m in models])
+        if models:
+            select.value = models[0]
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button = event.button.id
+        if button == "cancel":
+            self.dismiss(False)
+        elif button == "fetch":
+            key = self.query_one("#key", Input).value.strip()
+            url = self.query_one("#base_url", Input).value.strip()
+            if not key or not url:
+                return
+            models = list_models(url, key)
+            if models:
+                select = self.query_one("#model", Select)
+                select.set_options([(m, m) for m in models])
+                select.value = models[0]
+        elif button == "save":
+            key = self.query_one("#key", Input).value.strip()
+            provider = self.query_one("#provider", Select).value
+            base_url = self.query_one("#base_url", Input).value.strip()
+            model = self.query_one("#model", Select).value
+            if not key or model == Select.BLANK:
+                return
+            save_auth(
+                {"provider": provider, "base_url": base_url, "api_key": key, "model": model}
+            )
+            self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class MybotApp(App):
+    CSS = """
+    Screen { background: $background; color: $foreground; }
+    #main { height: 1fr; }
+    #chat { width: 1fr; padding: 0 1; }
+    #sidebar { width: 40; border-left: solid $surface; padding: 1 1; }
+    Sidebar Static { height: auto; margin: 0 0 1 0; }
+    #side-title { text-style: bold; color: $foreground; }
+    .meta { color: $text-muted; padding: 0 0 0 3; height: auto; margin: 0 0 1 0; }
+    #bottom { dock: bottom; height: auto; }
+    #statusbar { height: 1; background: $panel; padding: 0 1; }
+    #status-left { width: 1fr; }
+    #status-right { width: auto; text-align: right; }
+    .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
+    .msg.you { border-left: thick $success; }
+    .msg.mybot { border-left: thick $primary; }
+    .role { height: 1; text-style: bold; color: $text-muted; }
+    .msg.you .role { color: $success; }
+    .msg.mybot .role { color: $primary; }
+    .tool { color: $warning; padding: 0 0 0 2; height: auto; }
+    #prompt { border: tall $surface; background: $panel; }
+    #prompt:focus { border: tall $primary; }
+    ApprovalScreen { align: center middle; }
+    #approval { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
+    #approval-title { text-style: bold; color: $warning; }
+    #approval-buttons { height: auto; align: right middle; }
+    ConnectScreen { align: center middle; }
+    #connect { width: 76; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
+    #connect-title { text-style: bold; color: $primary; }
+    .field-label { color: $text-muted; margin: 1 0 0 0; }
+    #model-row { height: auto; }
+    #model-row Select { width: 1fr; }
+    #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
+    #home { height: 1fr; align: center middle; }
+    #logo { width: 72; text-align: center; height: auto; }
+    #home-input { width: 72; border: solid #30303a; border-left: thick #4c8bf5; background: #14141b; color: #c9d1d9; }
+    #home-input:focus { border: solid #3a3a48; border-left: thick #4c8bf5; }
+    #home-input .input--placeholder, #prompt .input--placeholder { color: #6b7280; }
+    #home-meta { width: 72; text-align: center; margin: 1 0 0 0; height: auto; }
+    #home-hint { width: 72; text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
+    #home-tip { width: 72; text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
+    #version { dock: bottom; height: 1; text-align: right; color: $text-muted; padding: 0 1; }
+    Chooser { align: center middle; }
+    #palette { width: 60; height: auto; max-height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
+    #palette-title { text-style: bold; color: $primary; margin: 0 0 1 0; }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "quit"),
+        Binding("tab", "mode", "mode"),
+        Binding("ctrl+p", "palette", "palette"),
+        Binding("ctrl+t", "theme", "theme"),
+        Binding("ctrl+o", "toggle_todos", "sidebar"),
+        Binding("ctrl+n", "new", "new"),
+        Binding("escape", "cancel", "cancel", show=False),
+        Binding("ctrl+r", "reset", "reset", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.agent = None
+        self.busy = False
+        self.mode = "build"
+        self.view = "home"
+        self.title = "new session"
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.context_tokens = 0
+        self._last_tool = None
+        self._cancel = threading.Event()
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="main"):
+            yield VerticalScroll(id="chat")
+            yield Sidebar(id="sidebar")
+        with Vertical(id="home"):
+            yield Static(_logo(), id="logo")
+            yield Input(placeholder=HOME_PLACEHOLDER, id="home-input")
+            yield Static("", id="home-meta")
+            yield Static(_hint_text(), id="home-hint")
+            yield Static(_tip_text(), id="home-tip")
+        with Vertical(id="bottom"):
+            yield Input(placeholder="Ask mybot anything...", id="prompt")
+            with Horizontal(id="statusbar"):
+                yield Static("", id="status-left")
+                yield Static("", id="status-right")
+        yield Static(VERSION, id="version")
+
+    def on_mount(self) -> None:
+        self._register_themes()
+        self.theme = "mybot"
+        set_approval_handler(self._approve)
+        if is_configured():
+            try:
+                self.agent = Agent(system_prompt=self._system_prompt())
+            except Exception as exc:
+                self._note(f"error: {exc}")
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_title(self.title)
+        sidebar.set_tools(len(TOOL_SPECS))
+        sidebar.set_todos(get_todos())
+        self._refresh_status()
+        self._set_view("home")
+        self._refresh_home_meta()
+
+    def _register_themes(self) -> None:
+        self.register_theme(
+            Theme(
+                "mybot",
+                primary="#c4b5fd",
+                secondary="#818cf8",
+                accent="#22d3ee",
+                background="#0b0b12",
+                surface="#16161f",
+                panel="#16161f",
+                success="#22c55e",
+                warning="#eab308",
+                error="#ef4444",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "dracula",
+                primary="#bd93f9",
+                secondary="#ff79c6",
+                accent="#8be9fd",
+                background="#282a36",
+                surface="#343746",
+                panel="#21222c",
+                success="#50fa7b",
+                warning="#f1fa8c",
+                error="#ff5555",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "tokyo-night",
+                primary="#7aa2f7",
+                secondary="#bb9af7",
+                accent="#7dcfff",
+                background="#1a1b26",
+                surface="#24283b",
+                panel="#16161e",
+                success="#9ece6a",
+                warning="#e0af68",
+                error="#f7768e",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "gruvbox",
+                primary="#fabd2f",
+                secondary="#b8bb26",
+                accent="#83a598",
+                background="#282828",
+                surface="#3c3836",
+                panel="#1d2021",
+                success="#b8bb26",
+                warning="#fabd2f",
+                error="#fb4934",
+                dark=True,
+            )
+        )
+        self.register_theme(
+            Theme(
+                "nord",
+                primary="#88c0d0",
+                secondary="#81a1c1",
+                accent="#8fbcbb",
+                background="#2e3440",
+                surface="#3b4252",
+                panel="#2e3440",
+                success="#a3be8c",
+                warning="#ebcb8b",
+                error="#bf616a",
+                dark=True,
+            )
+        )
+
+    def _system_prompt(self) -> str:
+        return SYSTEM_PROMPT + MODES.get(self.mode, "")
+
+    def _refresh_status(self) -> None:
+        model = self.agent.model if self.agent else "not connected"
+        provider = load_auth().get("provider", "")
+        left = Text()
+        left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+        left.append(" auto · ", style="#8b93a7")
+        left.append(model, style="#e5e7eb")
+        if provider:
+            left.append(f" {provider}", style="#6b7280")
+        self.query_one("#status-left", Static).update(left)
+
+        cost = self._cost()
+        right = Text()
+        right.append(f"{WORKSPACE}   ", style="#6b7280")
+        if self.context_tokens:
+            right.append(
+                f"{self.context_tokens:,} ({self._context_percent():.0f}%)   ", style="#6b7280"
+            )
+        if cost is not None:
+            right.append(f"${cost:.4f}   ", style="#6b7280")
+        right.append("ctrl+p commands", style="#6b7280")
+        self.query_one("#status-right", Static).update(right)
+
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_context(self.context_tokens, self._context_percent(), cost or 0.0)
+
+    def _context_percent(self) -> float:
+        model = self.agent.model if self.agent else ""
+        window = CONTEXT_WINDOWS.get(model, DEFAULT_CONTEXT)
+        if not window:
+            return 0.0
+        return min(100.0, self.context_tokens / window * 100)
+
+    def _cost(self):
+        model = self.agent.model if self.agent else ""
+        price = PRICING.get(model)
+        if price is None:
+            return None
+        return self.tokens_in / 1e6 * price[0] + self.tokens_out / 1e6 * price[1]
+
+    def _set_view(self, view: str) -> None:
+        self.view = view
+        chat = view == "chat"
+        self.query_one("#main").display = chat
+        self.query_one("#bottom").display = chat
+        self.query_one("#home").display = not chat
+        self.query_one("#version").display = not chat
+        if chat:
+            self.query_one("#prompt", Input).focus()
         else:
-            model = pick
+            self.query_one("#home-input", Input).focus()
 
-    save_auth({"provider": provider, "base_url": base_url, "api_key": api_key, "model": model})
-    console.print(f"[green]saved[/] {provider} / [bold]{model}[/]")
-    console.print(f"[dim]stored in {AUTH_PATH} - reused automatically next time[/]\n")
-    return True
+    def _refresh_home_meta(self) -> None:
+        meta = Text(justify="center")
+        if self.agent is not None:
+            provider = load_auth().get("provider", "")
+            meta.append("● ", style=ACCENT_SOFT)
+            meta.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+            meta.append(" auto ", style="#8b93a7")
+            meta.append("· ", style="#4b5563")
+            meta.append(self.agent.model, style="#e5e7eb")
+            if provider:
+                meta.append(f"  {provider}", style="#6b7280")
+        else:
+            meta.append("● ", style="#eab308")
+            meta.append("not connected · type /connect to add an API key", style="#eab308")
+        self.query_one("#home-meta", Static).update(meta)
 
+    def _scroll_end(self) -> None:
+        try:
+            self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
 
-def _change_model() -> bool:
-    auth = load_auth()
-    if not auth.get("api_key"):
-        console.print("[yellow]connect first with /connect[/]")
-        return False
-    console.print("[dim]asking the provider for available models...[/]")
-    models = list_models(auth.get("base_url", ""), auth["api_key"])
-    if not models:
-        models = PROVIDERS.get(auth.get("provider", ""), {}).get("models", [])
-    if not models:
-        console.print("[red]no models found[/]")
-        return False
-    current = auth.get("model", "")
-    for index, name in enumerate(models, 1):
-        mark = "  [green](current)[/]" if name == current else ""
-        console.print(f"  [cyan]{index}[/]) {name}{mark}")
-    pick = Prompt.ask("model", default=current or "1").strip()
-    if pick.isdigit() and 1 <= int(pick) <= len(models):
-        model = models[int(pick) - 1]
-    else:
-        model = pick
-    auth["model"] = model
-    save_auth(auth)
-    console.print(f"[green]model set to[/] [bold]{model}[/]\n")
-    return True
+    def _note(self, text: str) -> None:
+        if self.view == "home":
+            self._set_view("chat")
+        self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", text))
+        self._scroll_end()
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        event.input.value = ""
+        if not text or self.busy:
+            return
+        if text.startswith("/"):
+            self._command(text)
+            return
+        if self.view == "home":
+            self._set_view("chat")
+        if self.title == "new session":
+            self.title = text[:40]
+            self.query_one(Sidebar).set_title(self.title)
+        chat = self.query_one("#chat", VerticalScroll)
+        chat.mount(MessageView("you", text))
+        assistant = MessageView("mybot", "")
+        chat.mount(assistant)
+        self._scroll_end()
+        self.busy = True
+        self._cancel.clear()
+        self._refresh_status()
+        self._run_agent(text, assistant)
 
-HELP = """[bold]commands[/]
-  [cyan]/connect[/]  set provider, key and model
-  [cyan]/models[/]   switch the model
-  [cyan]/reset[/]    clear conversation history
-  [cyan]/exit[/]     quit
-Type any task and press Enter. Tools show as tool lines."""
+    def _command(self, text: str) -> None:
+        command = text.split()[0].lower()
+        mapping = {
+            "/connect": "connect",
+            "/models": "models",
+            "/theme": "theme",
+            "/mode": "mode",
+            "/reset": "reset",
+            "/help": "help",
+            "/new": "new",
+            "/exit": "quit",
+            "/quit": "quit",
+        }
+        action = mapping.get(command)
+        if action is None:
+            self._note(f"Unknown command: {command}")
+        else:
+            self._run_command(action)
 
+    def _run_command(self, action: str) -> None:
+        if action == "connect":
+            self._connect()
+        elif action == "models":
+            self._choose_model()
+        elif action == "theme":
+            self._choose_theme()
+        elif action == "mode":
+            self._choose_mode()
+        elif action == "new":
+            self.action_new()
+        elif action == "reset":
+            self.action_reset()
+        elif action == "help":
+            self._note(HELP)
+        elif action == "quit":
+            self.exit()
 
-def _make_agent():
-    if not is_configured():
-        return None
-    try:
-        return Agent()
-    except Exception as exc:
-        console.print(f"[red]{exc}[/]")
-        return None
+    def _connect(self) -> None:
+        def done(saved) -> None:
+            if not saved:
+                return
+            try:
+                self.agent = Agent(system_prompt=self._system_prompt())
+            except Exception as exc:
+                self._note(f"error: {exc}")
+                return
+            self._refresh_status()
+            self._refresh_home_meta()
+            self._note(f"Connected: {self.agent.model}")
+
+        self.push_screen(ConnectScreen(), done)
+
+    def _choose_model(self) -> None:
+        auth = load_auth()
+        if not auth.get("api_key"):
+            self._note("Connect first with /connect.")
+            return
+        models = list_models(auth.get("base_url", ""), auth["api_key"])
+        if not models:
+            models = PROVIDERS.get(auth.get("provider", ""), {}).get("models", [])
+        if not models:
+            self._note("No models found.")
+            return
+
+        def done(choice) -> None:
+            if not choice:
+                return
+            auth["model"] = choice
+            save_auth(auth)
+            try:
+                self.agent = Agent(system_prompt=self._system_prompt())
+            except Exception as exc:
+                self._note(f"error: {exc}")
+                return
+            self._refresh_status()
+            self._refresh_home_meta()
+            self._note(f"Model set to {choice}")
+
+        self.push_screen(Chooser("select model", [(m, m) for m in models]), done)
+
+    def _choose_theme(self) -> None:
+        names = sorted({*self.available_themes.keys()})
+
+        def done(choice) -> None:
+            if choice:
+                self.theme = choice
+                self._note(f"Theme: {choice}")
+
+        self.push_screen(Chooser("select theme", [(n, n) for n in names]), done)
+
+    def _choose_mode(self) -> None:
+        def done(choice) -> None:
+            if not choice:
+                return
+            self.mode = choice
+            if self.agent is not None:
+                self.agent.messages[0]["content"] = self._system_prompt()
+            self._refresh_status()
+            self._refresh_home_meta()
+            self._note(f"Agent mode: {choice}")
+
+        self.push_screen(
+            Chooser("select agent mode", [(m, m) for m in MODES]), done
+        )
+
+    @work(thread=True)
+    def _run_agent(self, text: str, assistant: MessageView) -> None:
+        if self.agent is None:
+            self.call_from_thread(assistant.set_text, "Not connected - type /connect first.")
+            self.call_from_thread(self._finish)
+            return
+        start = time.monotonic()
+        try:
+            for event in self.agent.respond_stream(text):
+                if self._cancel.is_set():
+                    self.call_from_thread(assistant.append, "\n\n_\\[cancelled]_")
+                    break
+                kind = event["type"]
+                if kind == "delta":
+                    self.call_from_thread(assistant.append, event["text"])
+                elif kind == "tool":
+                    self.call_from_thread(self._add_tool, event["name"], event["args"])
+                elif kind == "tool_result":
+                    self.call_from_thread(self._tool_result, event["result"])
+                    if event["name"] == "todo_write":
+                        self.call_from_thread(self._refresh_todos)
+                elif kind == "usage":
+                    self.call_from_thread(
+                        self._add_usage, event.get("input", 0), event.get("output", 0)
+                    )
+                elif kind == "final":
+                    self.call_from_thread(
+                        self._finalize,
+                        assistant,
+                        event["text"] or assistant._text,
+                        time.monotonic() - start,
+                    )
+        except Exception as exc:
+            self.call_from_thread(assistant.set_text, f"error: {exc}")
+        finally:
+            self.call_from_thread(self._finish)
+
+    def _finalize(self, assistant: MessageView, text: str, elapsed: float) -> None:
+        assistant.set_text(text)
+        meta = Text()
+        meta.append("▪ ", style=ACCENT_SOFT)
+        meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
+        meta.append(" · ", style="#4b5563")
+        meta.append(self.agent.model if self.agent else "", style="#9ca3af")
+        meta.append(f" · {elapsed:.1f}s", style="#6b7280")
+        self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
+        self._scroll_end()
+
+    def _add_usage(self, tokens_in: int, tokens_out: int) -> None:
+        self.tokens_in += tokens_in
+        self.tokens_out += tokens_out
+        self.context_tokens = tokens_in
+        self._refresh_status()
+
+    def _add_tool(self, name: str, args: str) -> None:
+        view = ToolView(name, args)
+        self._last_tool = view
+        self.query_one("#chat", VerticalScroll).mount(view)
+        self._scroll_end()
+
+    def _tool_result(self, result: str) -> None:
+        if self._last_tool is not None:
+            self._last_tool.set_result(result)
+        self._scroll_end()
+
+    def _refresh_todos(self) -> None:
+        self.query_one(Sidebar).set_todos(get_todos())
+
+    def _finish(self) -> None:
+        self.busy = False
+        self._refresh_status()
+        self._scroll_end()
+        self.query_one("#prompt", Input).focus()
+
+    def _approve(self, action: str) -> bool:
+        event = threading.Event()
+        result = {"ok": False}
+
+        def ask() -> None:
+            def done(ok) -> None:
+                result["ok"] = bool(ok)
+                event.set()
+
+            self.push_screen(ApprovalScreen(action), done)
+
+        self.call_from_thread(ask)
+        event.wait()
+        return result["ok"]
+
+    def action_reset(self) -> None:
+        if self.agent is not None:
+            self.agent.reset()
+        self._note("History cleared.")
+
+    def action_new(self) -> None:
+        if self.agent is not None:
+            self.agent.reset()
+        self.query_one("#chat", VerticalScroll).remove_children()
+        todo_write([])
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_todos([])
+        sidebar.set_title("new session")
+        self.title = "new session"
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.context_tokens = 0
+        self._refresh_status()
+        self._set_view("home")
+        self._refresh_home_meta()
+
+    def action_toggle_todos(self) -> None:
+        sidebar = self.query_one(Sidebar)
+        sidebar.display = not sidebar.display
+
+    def action_theme(self) -> None:
+        self._choose_theme()
+
+    def action_mode(self) -> None:
+        self._choose_mode()
+
+    def action_palette(self) -> None:
+        def done(choice) -> None:
+            if choice:
+                self._run_command(choice)
+
+        self.push_screen(Chooser("commands", COMMANDS), done)
+
+    def action_cancel(self) -> None:
+        if self.busy:
+            self._cancel.set()
+            self._note("Cancelling…")
 
 
 def main() -> None:
-    console.clear()
-    show_banner()
-
-    agent = _make_agent()
-    if agent is None:
-        console.print("[yellow]not connected[/] - run [bold]/connect[/] to add your API key.\n")
-    else:
-        console.print(f"[dim]model[/] [bold]{agent.model}[/]  [dim]{DOT} workspace[/] {WORKSPACE}\n")
-
-    session = PromptSession(style=PROMPT_STYLE)
-
-    def toolbar():
-        model = agent.model if agent else "not connected"
-        approvals = "on" if REQUIRE_APPROVAL else "off"
-        return [
-            (
-                "class:bottom-toolbar",
-                f" {model}  {DOT}  workspace: {WORKSPACE}  {DOT}  approvals: {approvals}  {DOT}  /help ",
-            )
-        ]
-
-    while True:
-        try:
-            text = session.prompt([("class:prompt", PROMPT_CHAR)], bottom_toolbar=toolbar).strip()
-        except KeyboardInterrupt:
-            continue
-        except EOFError:
-            break
-        if not text:
-            continue
-        if text in {"/exit", "/quit"}:
-            break
-        if text == "/help":
-            console.print(Panel(HELP, border_style="#374151", padding=(0, 1)))
-            continue
-        if text == "/connect":
-            if _connect():
-                agent = _make_agent()
-            continue
-        if text == "/models":
-            if _change_model():
-                agent = _make_agent()
-            continue
-        if text == "/reset":
-            if agent is not None:
-                agent.reset()
-                console.print("[dim]history cleared[/]")
-            continue
-
-        console.print(user_panel(text))
-        if agent is None:
-            console.print("[red]not connected[/] - run [bold]/connect[/] first.\n")
-            continue
-
-        view = StreamView()
-        try:
-            view._start()
-            for event in agent.respond_stream(text):
-                view.handle(event)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]cancelled[/]")
-        except Exception as exc:
-            console.print(f"[red]error:[/] {exc}")
-        finally:
-            view.close()
-        console.print()
-
-    console.print("[dim]bye[/]")
+    MybotApp().run()
 
 
 if __name__ == "__main__":

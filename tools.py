@@ -299,6 +299,38 @@ def delete_task(name: str) -> str:
     return _truncate(f"exit={result.returncode}\n{output}".strip())
 
 
+_todos: list = []
+
+
+def get_todos() -> list:
+    return list(_todos)
+
+
+def _render_todos() -> str:
+    if not _todos:
+        return "(no todos)"
+    marks = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
+    return "\n".join(f"{marks.get(item['status'], '[ ]')} {item['content']}" for item in _todos)
+
+
+def todo_write(todos: list = None) -> str:
+    global _todos
+    if todos is None:
+        return _render_todos()
+    normalized = []
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "")).strip()
+        status = item.get("status", "pending")
+        if status not in {"pending", "in_progress", "completed"}:
+            status = "pending"
+        if content:
+            normalized.append({"content": content, "status": status})
+    _todos = normalized
+    return _render_todos()
+
+
 TOOL_SPECS = [
     {
         "type": "function",
@@ -500,6 +532,36 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "todo_write",
+            "description": (
+                "Create or update the task plan. Pass the complete list every call, each item "
+                "with content and status (pending, in_progress, completed)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                },
+                            },
+                            "required": ["content", "status"],
+                        },
+                    }
+                },
+                "required": ["todos"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -517,6 +579,7 @@ _DISPATCH = {
     "schedule_task": schedule_task,
     "list_tasks": list_tasks,
     "delete_task": delete_task,
+    "todo_write": todo_write,
 }
 
 

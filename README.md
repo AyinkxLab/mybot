@@ -31,15 +31,37 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 ## Running it
 
-- **Terminal UI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
-  Streaming markdown replies, tool-call lines, a status toolbar, and a themed banner.
+- **Full-screen TUI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
 - **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
-Commands: `/connect`, `/models`, `/reset`, `/exit` (`/help` in the TUI).
+### TUI
 
-The TUI needs `rich` and `prompt_toolkit` (already in `requirements.txt`). It switches to
-ASCII glyphs automatically on consoles that can't do UTF-8.
+Opens on an opencode-style home screen: a centered logo, a centered prompt box, the active
+agent mode + model line, key hints, and a version tag. The first message switches to the chat
+view:
+- scrollable chat with per-role colored borders and streaming markdown
+- inline tool-call rows and a per-message meta line (`▪ Build · model · 2.3s`)
+- a right sidebar showing the session title, **Context** (tokens, % used, $ spent),
+  **Tools**, and a live **todo** list the model keeps updated
+- a bottom status line (mode · model · provider, workspace, context, cost, `ctrl+p commands`)
+- an approval modal for gated actions
+
+Keys:
+`tab` agent mode · `ctrl+p` command palette · `ctrl+t` theme · `ctrl+o` toggle todos ·
+`ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
+
+Commands: `/connect`, `/models`, `/theme`, `/mode`, `/reset`, `/new`, `/exit` (`/help` in the TUI).
+
+Agent modes: **build** (default, full access) and **plan** (read-only; the model plans but does
+not modify files or run mutating commands). Themes: `mybot`, `dracula`, `tokyo-night`, `gruvbox`,
+`nord`, plus Textual's built-ins.
+
+The TUI is built with [Textual](https://textual.textualize.io/) (`textual` + `rich` in
+`requirements.txt`). The model uses a `todo_write` tool to plan multi-step work; those items
+appear in the sidebar as they change.
+
+> This is an opencode-*style* interface, not a pixel-perfect clone of opencode's Go/Bubble Tea UI.
 
 ## Configuration (`.env`)
 
