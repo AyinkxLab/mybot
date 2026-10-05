@@ -25,7 +25,12 @@ def _print_event(event: dict) -> None:
 
 def main() -> None:
     print("mybot ready. Commands: /reset, /exit")
-    agent = Agent()
+    try:
+        agent = Agent()
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print("Set LLM_API_KEY in .env (see .env.example), then try again.")
+        return
     while True:
         try:
             text = input("\nyou> ").strip()
