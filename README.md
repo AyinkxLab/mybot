@@ -31,15 +31,20 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 ## Running it
 
-- **Terminal UI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
-  Streaming markdown replies, tool-call lines, a status toolbar, and a themed banner.
+- **Full-screen TUI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
+  An opencode-style interface: top status bar, scrollable chat with per-role colored borders,
+  streaming markdown, inline tool-call rows, a live **todo** sidebar the model keeps updated,
+  and a bottom prompt. Bindings: `ctrl+c` quit, `ctrl+r` reset, `ctrl+t` toggle the todo panel.
 - **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
 Commands: `/connect`, `/models`, `/reset`, `/exit` (`/help` in the TUI).
 
-The TUI needs `rich` and `prompt_toolkit` (already in `requirements.txt`). It switches to
-ASCII glyphs automatically on consoles that can't do UTF-8.
+The TUI is built with [Textual](https://textual.textualize.io/) (`textual` + `rich` in
+`requirements.txt`). The model uses a `todo_write` tool to plan multi-step work; those items
+appear in the sidebar as they change.
+
+> This is an opencode-*style* interface, not a pixel-perfect clone of opencode's Go/Bubble Tea UI.
 
 ## Configuration (`.env`)
 
