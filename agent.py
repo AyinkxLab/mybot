@@ -29,37 +29,71 @@ class Agent:
             self.messages = [self.messages[0]] + self.messages[cut:]
 
     def respond(self, user_text: str, on_event=None) -> str:
-        def emit(event):
-            if on_event:
+        final = ""
+        for event in self.respond_stream(user_text):
+            if on_event is not None:
                 on_event(event)
+            if event["type"] == "final":
+                final = event["text"]
+        return final
 
+    def respond_stream(self, user_text: str):
         self.messages.append({"role": "user", "content": user_text})
 
         for _ in range(MAX_TOOL_ROUNDS):
-            completion = self.client.chat.completions.create(
+            content_parts = []
+            tool_calls = {}
+            stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
                 tools=TOOL_SPECS,
                 tool_choice="auto",
+                stream=True,
             )
-            message = completion.choices[0].message
-            self.messages.append(message.model_dump(exclude_none=True))
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield {"type": "delta", "text": delta.content}
+                if delta.tool_calls:
+                    for call in delta.tool_calls:
+                        entry = tool_calls.setdefault(
+                            call.index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        if call.id:
+                            entry["id"] = call.id
+                        if call.function:
+                            if call.function.name:
+                                entry["name"] += call.function.name
+                            if call.function.arguments:
+                                entry["arguments"] += call.function.arguments
 
-            if not message.tool_calls:
-                self._trim()
-                return message.content or ""
-
-            for call in message.tool_calls:
-                emit({"type": "tool", "name": call.function.name, "args": call.function.arguments})
-                result = execute_tool(call.function.name, call.function.arguments)
-                emit({"type": "tool_result", "name": call.function.name, "result": result})
-                self.messages.append(
+            content = "".join(content_parts)
+            assistant = {"role": "assistant", "content": content or None}
+            if tool_calls:
+                assistant["tool_calls"] = [
                     {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": result,
+                        "id": entry["id"],
+                        "type": "function",
+                        "function": {"name": entry["name"], "arguments": entry["arguments"]},
                     }
-                )
+                    for _, entry in sorted(tool_calls.items())
+                ]
+            self.messages.append(assistant)
+
+            if not tool_calls:
+                self._trim()
+                yield {"type": "final", "text": content}
+                return
+
+            for call in assistant["tool_calls"]:
+                name = call["function"]["name"]
+                yield {"type": "tool", "name": name, "args": call["function"]["arguments"]}
+                result = execute_tool(name, call["function"]["arguments"])
+                yield {"type": "tool_result", "name": name, "result": result}
+                self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
 
         self._trim()
-        return "Stopped: reached the tool-call limit for one turn."
+        yield {"type": "final", "text": "Stopped: reached the tool-call limit for one turn."}

@@ -31,10 +31,15 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 ## Running it
 
-- **Terminal:** `python main.py`, or type `mybot` if the folder is on your `PATH`.
+- **Terminal UI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
+  Streaming markdown replies, tool-call lines, a status toolbar, and a themed banner.
+- **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
-Commands: `/connect`, `/models`, `/reset`, `/exit`.
+Commands: `/connect`, `/models`, `/reset`, `/exit` (`/help` in the TUI).
+
+The TUI needs `rich` and `prompt_toolkit` (already in `requirements.txt`). It switches to
+ASCII glyphs automatically on consoles that can't do UTF-8.
 
 ## Configuration (`.env`)
 
