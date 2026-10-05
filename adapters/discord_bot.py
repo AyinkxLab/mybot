@@ -5,8 +5,21 @@ import discord
 
 from agent import Agent
 from config import DISCORD_TOKEN
+from tools import set_approval_handler
 
 _sessions: dict[int, Agent] = {}
+_pending = {"approved": False}
+APPROVALS = {"approve", "approved", "yes", "y", "go ahead", "push it", "do it", "lgtm"}
+
+
+def _approve(action: str) -> bool:
+    if _pending["approved"]:
+        _pending["approved"] = False
+        return True
+    return False
+
+
+set_approval_handler(_approve)
 
 
 def _agent_for(channel_id: int) -> Agent:
@@ -42,6 +55,8 @@ async def on_message(message: discord.Message) -> None:
         _agent_for(message.channel.id).reset()
         await message.channel.send("history cleared")
         return
+    if content.lower() in APPROVALS:
+        _pending["approved"] = True
 
     async with message.channel.typing():
         try:

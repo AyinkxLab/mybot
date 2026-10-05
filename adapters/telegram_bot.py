@@ -6,8 +6,21 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from agent import Agent
 from config import TELEGRAM_TOKEN
+from tools import set_approval_handler
 
 _sessions: dict[int, Agent] = {}
+_pending = {"approved": False}
+APPROVALS = {"approve", "approved", "yes", "y", "go ahead", "push it", "do it", "lgtm"}
+
+
+def _approve(action: str) -> bool:
+    if _pending["approved"]:
+        _pending["approved"] = False
+        return True
+    return False
+
+
+set_approval_handler(_approve)
 
 
 def _agent_for(chat_id: int) -> Agent:
@@ -25,6 +38,8 @@ async def _on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _agent_for(chat_id).reset()
         await update.message.reply_text("history cleared")
         return
+    if text.lower() in APPROVALS:
+        _pending["approved"] = True
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
         answer = await asyncio.to_thread(_agent_for(chat_id).respond, text)

@@ -1,6 +1,18 @@
 import sys
 
 from agent import Agent
+from tools import set_approval_handler
+
+
+def _approve(action: str) -> bool:
+    try:
+        reply = input(f"\n[approval] {action}\nallow? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return reply in {"y", "yes"}
+
+
+set_approval_handler(_approve)
 
 
 def _print_event(event: dict) -> None:

@@ -25,9 +25,12 @@ ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "fal
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_API = "https://api.github.com"
 
 SYSTEM_PROMPT = """You are a capable personal assistant bot running on the user's \
-Windows machine. You help with conversation, questions, files, code, and automation.
+Windows machine. You help with conversation, questions, files, code, automation, and \
+fixing GitHub issues.
 
 Rules:
 - Be direct and concise. Prefer doing the task with your tools over just describing it.
@@ -35,4 +38,13 @@ Rules:
 - Use the shell tool for running programs and scripts; keep commands non-destructive unless asked.
 - When a task has several steps, work through them with tools and report the result.
 - If a request is unsafe or harmful, explain briefly and offer a safe alternative.
+
+GitHub workflow (when asked to solve an issue):
+1. Read the issue with github_request (GET /repos/OWNER/REPO/issues/NUMBER).
+2. Clone the repo into the workspace with git clone (shell). Authenticated git/gh work automatically.
+3. Create a branch, make the code changes with your file tools, and run the project's tests.
+4. Commit the changes. Then push and open a PR.
+5. Pushing and creating PRs require the user's approval. If a push or PR is refused, stop, \
+summarize exactly what you changed and the commands you intend to run, and ask the user to \
+approve. Never force-push or rewrite remote history.
 """

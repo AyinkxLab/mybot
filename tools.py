@@ -1,12 +1,49 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import requests
 
-from config import ALLOW_SHELL, WORKSPACE
+from config import ALLOW_SHELL, GITHUB_API, GITHUB_TOKEN, WORKSPACE
 
 MAX_OUTPUT = 8000
+
+_approval_handler = None
+
+
+def set_approval_handler(handler) -> None:
+    global _approval_handler
+    _approval_handler = handler
+
+
+def _ask_approval(action: str) -> bool:
+    if _approval_handler is None:
+        return False
+    return bool(_approval_handler(action))
+
+
+def _shell_env() -> dict:
+    env = os.environ.copy()
+    if GITHUB_TOKEN:
+        env["GITHUB_TOKEN"] = GITHUB_TOKEN
+        env["GH_TOKEN"] = GITHUB_TOKEN
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return env
+
+
+DESTRUCTIVE_SHELL_PATTERNS = (
+    "git push",
+    "gh pr create",
+    "gh release",
+    "gh repo delete",
+    "gh api --method post",
+    "gh api --method patch",
+    "gh api --method delete",
+    "gh api -x post",
+    "gh api -x patch",
+    "gh api -x delete",
+)
 
 
 def _safe_path(relative: str) -> Path:
@@ -52,6 +89,13 @@ def list_dir(path: str = ".") -> str:
 def run_shell(command: str) -> str:
     if not ALLOW_SHELL:
         return "ERROR: shell execution is disabled (ALLOW_SHELL=false)"
+    lowered = command.lower()
+    if any(pattern in lowered for pattern in DESTRUCTIVE_SHELL_PATTERNS):
+        if not _ask_approval(f"shell command: {command}"):
+            return (
+                "DENIED: this command needs the user's approval. "
+                "Summarize the changes and ask the user to approve before pushing or opening a PR."
+            )
     try:
         result = subprocess.run(
             command,
@@ -60,6 +104,7 @@ def run_shell(command: str) -> str:
             capture_output=True,
             text=True,
             timeout=120,
+            env=_shell_env(),
         )
     except subprocess.TimeoutExpired:
         return "ERROR: command timed out after 120s"
@@ -72,6 +117,31 @@ def run_shell(command: str) -> str:
 def http_get(url: str) -> str:
     try:
         resp = requests.get(url, timeout=30, headers={"User-Agent": "mybot/1.0"})
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    return _truncate(f"status={resp.status_code}\n{resp.text}")
+
+
+def github_request(method: str, path: str, body=None) -> str:
+    if not GITHUB_TOKEN:
+        return "ERROR: GITHUB_TOKEN is not set in .env"
+    method = method.upper()
+    if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
+        return f"ERROR: unsupported method: {method}"
+    if method != "GET" and not _ask_approval(f"GitHub {method} {path}"):
+        return (
+            "DENIED: this GitHub write action needs the user's approval. "
+            "Explain what it would do and ask the user to approve."
+        )
+    url = path if path.startswith("http") else GITHUB_API + path
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "mybot/1.0",
+    }
+    try:
+        resp = requests.request(method, url, headers=headers, json=body, timeout=30)
     except Exception as exc:
         return f"ERROR: {exc}"
     return _truncate(f"status={resp.status_code}\n{resp.text}")
@@ -141,6 +211,35 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_request",
+            "description": (
+                "Call the GitHub REST API with the configured token. Use for reading issues "
+                "and creating PRs or comments. Example path: /repos/OWNER/REPO/issues/5"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"],
+                        "description": "HTTP method",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API path like /repos/OWNER/REPO/issues/5 or a full URL",
+                    },
+                    "body": {
+                        "type": "object",
+                        "description": "Optional JSON body for POST/PATCH/PUT",
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -149,6 +248,7 @@ _DISPATCH = {
     "list_dir": list_dir,
     "run_shell": run_shell,
     "http_get": http_get,
+    "github_request": github_request,
 }
 
 
