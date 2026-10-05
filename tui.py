@@ -89,17 +89,37 @@ BANNER = [
     "██║ ╚═╝ ██║   ██║   ██████╔╝╚██████╔╝   ██║   ",
     "╚═╝     ╚═╝   ╚═╝   ╚═════╝  ╚═════╝    ╚═╝   ",
 ]
-BANNER_COLORS = ["#f5f3ff", "#ddd6fe", "#c4b5fd", "#a78bfa", "#8b5cf6", "#7c3aed"]
+ACCENT = "#4c8bf5"
+ACCENT_SOFT = "#6ba3ff"
 VERSION = "mybot 0.1.0"
 HOME_PLACEHOLDER = 'Ask anything...  "What is the tech stack of this project?"'
-HOME_HINT = "tab agents      ctrl+p commands"
-HOME_TIP = "● Tip   Set REQUIRE_APPROVAL=true to gate risky commands"
 
 
 def _logo() -> Text:
+    light, dark = "#e8e8e8", "#8a8a8a"
     text = Text(justify="center")
-    for index, line in enumerate(BANNER):
-        text.append(line + "\n", style=f"bold {BANNER_COLORS[index % len(BANNER_COLORS)]}")
+    for line in BANNER:
+        half = len(line) // 2
+        text.append(line[:half], style=f"bold {light}")
+        text.append(line[half:], style=f"bold {dark}")
+        text.append("\n")
+    return text
+
+
+def _hint_text() -> Text:
+    text = Text(justify="center")
+    text.append("tab", style="bold #c9d1d9")
+    text.append(" agents        ", style="#6b7280")
+    text.append("ctrl+p", style="bold #c9d1d9")
+    text.append(" commands", style="#6b7280")
+    return text
+
+
+def _tip_text() -> Text:
+    text = Text(justify="center")
+    text.append("● ", style="#eab308")
+    text.append("Tip   ", style="bold #c9d1d9")
+    text.append("Set REQUIRE_APPROVAL=true to gate risky commands", style="#6b7280")
     return text
 
 
@@ -308,7 +328,8 @@ class MybotApp(App):
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
     #home { height: 1fr; align: center middle; }
     #logo { text-align: center; height: auto; }
-    #home-input { width: 72; border: tall $primary; background: $panel; }
+    #home-input { width: 72; border: solid #30303a; border-left: thick #4c8bf5; background: #14141b; }
+    #home-input:focus { border: solid #3a3a48; border-left: thick #4c8bf5; }
     #home-meta { text-align: center; margin: 1 0 0 0; height: auto; }
     #home-hint { text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
     #home-tip { text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
@@ -349,8 +370,8 @@ class MybotApp(App):
             yield Static(_logo(), id="logo")
             yield Input(placeholder=HOME_PLACEHOLDER, id="home-input")
             yield Static("", id="home-meta")
-            yield Static(HOME_HINT, id="home-hint")
-            yield Static(HOME_TIP, id="home-tip")
+            yield Static(_hint_text(), id="home-hint")
+            yield Static(_tip_text(), id="home-tip")
         yield Input(placeholder="Ask mybot anything...", id="prompt")
         yield Static(VERSION, id="version")
         yield Footer()
@@ -492,12 +513,15 @@ class MybotApp(App):
         meta = Text(justify="center")
         if self.agent is not None:
             provider = load_auth().get("provider", "")
-            meta.append(f"{self.mode.capitalize()} ", style="bold #c4b5fd")
-            meta.append("auto · ", style="#6b7280")
+            meta.append("● ", style=ACCENT_SOFT)
+            meta.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+            meta.append(" auto ", style="#8b93a7")
+            meta.append("· ", style="#4b5563")
             meta.append(self.agent.model, style="#e5e7eb")
             if provider:
                 meta.append(f"  {provider}", style="#6b7280")
         else:
+            meta.append("● ", style="#eab308")
             meta.append("not connected · type /connect to add an API key", style="#eab308")
         self.query_one("#home-meta", Static).update(meta)
 
