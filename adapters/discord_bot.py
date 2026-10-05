@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import threading
 
 import discord
 
@@ -8,19 +9,26 @@ from config import DISCORD_ALLOWED_IDS, DISCORD_TOKEN, MAX_SESSIONS
 from tools import set_approval_handler
 
 _sessions: dict[int, Agent] = {}
-_approvals: set = set()
-_last_request = {"action": None}
+_approvals: dict = {}
+_last_request: dict = {}
+_ctx = threading.local()
 
 
 def _approve(action: str) -> bool:
-    if action in _approvals:
-        _approvals.discard(action)
+    chat_id = getattr(_ctx, "chat_id", None)
+    key = (chat_id, action)
+    if _approvals.pop(key, False):
         return True
-    _last_request["action"] = action
+    _last_request[chat_id] = action
     return False
 
 
 set_approval_handler(_approve)
+
+
+def _respond(channel_id: int, text: str) -> str:
+    _ctx.chat_id = channel_id
+    return _agent_for(channel_id).respond(text)
 
 
 def _agent_for(channel_id: int) -> Agent:
@@ -67,17 +75,17 @@ async def on_message(message: discord.Message) -> None:
         await message.channel.send("history cleared")
         return
     if content == "/approve":
-        action = _last_request["action"]
+        action = _last_request.get(message.channel.id)
         if not action:
             await message.channel.send("nothing is waiting for approval")
             return
-        _approvals.add(action)
+        _approvals[(message.channel.id, action)] = True
         await message.channel.send("approved. proceeding.")
         content = "Approved. Proceed with the action you requested approval for."
 
     async with message.channel.typing():
         try:
-            answer = await asyncio.to_thread(_agent_for(message.channel.id).respond, content)
+            answer = await asyncio.to_thread(_respond, message.channel.id, content)
         except Exception as exc:
             answer = f"error: {exc}"
     await message.channel.send(answer[:1900] or "(no reply)")

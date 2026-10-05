@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import requests
@@ -44,7 +45,7 @@ def save_auth(data: dict) -> None:
 
 
 def is_configured() -> bool:
-    return bool(load_auth().get("api_key"))
+    return bool(load_auth().get("api_key") or os.getenv("LLM_API_KEY"))
 
 
 def list_models(base_url: str, api_key: str) -> list:
