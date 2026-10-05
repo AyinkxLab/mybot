@@ -48,12 +48,16 @@ view:
 - an approval modal for gated actions
 
 Keys:
-`tab` agent mode · `ctrl+p` command palette · `ctrl+x` leader (`n` new, `q` quit, `t` theme,
-`m` models, `c` compact, `x` export) · `ctrl+t` theme · `ctrl+o` toggle sidebar ·
-`ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
+`tab` agent mode · `ctrl+p` command palette · `ctrl+x` leader (`n` new, `l` sessions, `u` undo,
+`r` redo, `t` theme, `m` models, `c` compact, `x` export, `q` quit) · `ctrl+t` theme ·
+`ctrl+o` toggle sidebar · `ctrl+n` new session · `esc` cancel run · `ctrl+c` quit
 
 Commands: `/connect`, `/models`, `/theme` (`/themes`), `/mode`, `/thinking`, `/details`,
-`/compact` (`/summarize`), `/export`, `/new` (`/clear`), `/reset`, `/exit` (`/help` in the TUI).
+`/compact` (`/summarize`), `/export`, `/sessions` (`/resume`, `/continue`), `/undo`, `/redo`,
+`/new` (`/clear`), `/reset`, `/exit` (`/help` in the TUI).
+
+Sessions are kept in memory; `/sessions` switches between them and `/undo` / `/redo` move the
+last turn. (Undo/redo affect the conversation only — they don't revert files, unlike opencode.)
 
 Prefixes: `!command` runs a shell command; `@path` attaches a file's contents to your message.
 

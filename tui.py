@@ -76,6 +76,9 @@ COMMANDS = [
     ("toggle tool details", "details"),
     ("compact session", "compact"),
     ("export conversation", "export"),
+    ("switch session", "sessions"),
+    ("undo last turn", "undo"),
+    ("redo last turn", "redo"),
     ("new session", "new"),
     ("clear history", "reset"),
     ("help", "help"),
@@ -91,6 +94,9 @@ HELP = """[b]commands[/]
   /details     expand/collapse tool output
   /compact     summarize the session (alias /summarize)
   /export      write the conversation to a Markdown file
+  /sessions    switch between sessions (aliases /resume /continue)
+  /undo        remove the last turn (alias ctrl+x u)
+  /redo        restore an undone turn (alias ctrl+x r)
   /new         new session (alias /clear)
   /reset       clear conversation history
   /help        show this
@@ -102,7 +108,7 @@ HELP = """[b]commands[/]
 
 [b]keys[/]
   tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
-  ctrl+x  leader (n q t m c x)                       ctrl+t  theme
+  ctrl+x  leader (n l u r t m c x q)                 ctrl+t  theme
   ctrl+n  new session    esc     cancel run          ctrl+c  quit
 
 The model plans multi-step work with a todo list shown in the sidebar."""
@@ -147,6 +153,16 @@ def _tip_text() -> Text:
     text.append("Tip   ", style="bold #c9d1d9")
     text.append("Set REQUIRE_APPROVAL=true to gate risky commands", style="#6b7280")
     return text
+
+
+class Session:
+    def __init__(self, agent=None, title: str = "new session") -> None:
+        self.agent = agent
+        self.title = title
+        self.records: list = []
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.context_tokens = 0
 
 
 class MessageView(Vertical):
@@ -212,8 +228,14 @@ class ThinkingView(Static):
         self._text += chunk
         self._refresh_content()
 
-    def finish(self) -> None:
-        self._refresh_content(f"✻ Thought for {time.monotonic() - self._start:.1f}s")
+    def finish(self) -> float:
+        elapsed = time.monotonic() - self._start
+        self._refresh_content(f"✻ Thought for {elapsed:.1f}s")
+        return elapsed
+
+    def replay(self, text: str, elapsed: float) -> None:
+        self._text = text
+        self._refresh_content(f"✻ Thought for {elapsed:.1f}s")
 
 
 class Spinner(Static):
@@ -463,12 +485,23 @@ class MybotApp(App):
         self.show_thinking = True
         self.show_details = False
         self._last_tool = None
+        self._last_tool_record = None
         self._thinking = None
         self._thinking_views = []
         self._tool_views = []
         self._spinner = None
         self._leader = False
         self._cancel = threading.Event()
+        self.sessions = [Session()]
+        self.index = 0
+        self._undo_stack = []
+        self._redo_stack = []
+
+    def _session(self) -> Session:
+        return self.sessions[self.index]
+
+    def _record(self, record: dict) -> None:
+        self.sessions[self.index].records.append(record)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main"):
@@ -496,6 +529,7 @@ class MybotApp(App):
                 self.agent = Agent(system_prompt=self._system_prompt())
             except Exception as exc:
                 self._note(f"error: {exc}")
+        self.sessions[0].agent = self.agent
         sidebar = self.query_one(Sidebar)
         sidebar.set_title(self.title)
         sidebar.set_tools(len(TOOL_SPECS))
@@ -676,7 +710,10 @@ class MybotApp(App):
             self._set_view("chat")
         if self.title == "new session":
             self.title = text[:40]
+            self._session().title = self.title
             self.query_one(Sidebar).set_title(self.title)
+        self._push_undo()
+        self._record({"role": "you", "text": text})
         chat = self.query_one("#chat", VerticalScroll)
         chat.mount(MessageView("you", text))
         if text.startswith("!"):
@@ -732,6 +769,11 @@ class MybotApp(App):
             "/help": "help",
             "/new": "new",
             "/clear": "new",
+            "/sessions": "sessions",
+            "/resume": "sessions",
+            "/continue": "sessions",
+            "/undo": "undo",
+            "/redo": "redo",
             "/exit": "quit",
             "/quit": "quit",
         }
@@ -762,6 +804,12 @@ class MybotApp(App):
             self._compact()
         elif action == "export":
             self._export()
+        elif action == "sessions":
+            self._sessions_command()
+        elif action == "undo":
+            self.action_undo()
+        elif action == "redo":
+            self.action_redo()
         elif action == "help":
             self._note(HELP)
         elif action == "quit":
@@ -880,6 +928,7 @@ class MybotApp(App):
 
     def _finalize(self, assistant: MessageView, text: str, elapsed: float) -> None:
         assistant.set_text(text)
+        self._record({"role": "mybot", "text": text})
         meta = Text()
         meta.append("▪ ", style=ACCENT_SOFT)
         meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
@@ -887,6 +936,7 @@ class MybotApp(App):
         meta.append(self.agent.model if self.agent else "", style="#9ca3af")
         meta.append(f" · {elapsed:.1f}s", style="#6b7280")
         self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
+        self._record({"kind": "meta", "text": meta.plain})
         self._scroll_end()
 
     def _add_usage(self, tokens_in: int, tokens_out: int) -> None:
@@ -905,7 +955,10 @@ class MybotApp(App):
 
     def _add_tool(self, name: str, args: str) -> None:
         view = ToolView(name, args, detailed=self.show_details)
+        record = {"kind": "tool", "name": name, "args": args, "result": ""}
+        self._record(record)
         self._last_tool = view
+        self._last_tool_record = record
         self._tool_views.append(view)
         self.query_one("#chat", VerticalScroll).mount(view)
         self._scroll_end()
@@ -913,6 +966,8 @@ class MybotApp(App):
     def _tool_result(self, result: str) -> None:
         if self._last_tool is not None:
             self._last_tool.set_result(result)
+        if self._last_tool_record is not None:
+            self._last_tool_record["result"] = result
         self._scroll_end()
 
     @work(thread=True)
@@ -921,10 +976,18 @@ class MybotApp(App):
         self.call_from_thread(self._mount_tool, view)
         result = run_shell(command)
         self.call_from_thread(view.set_result, result)
+        self.call_from_thread(self._set_last_tool_result, result)
         self.call_from_thread(self._bash_context, command, result)
 
+    def _set_last_tool_result(self, result: str) -> None:
+        if self._last_tool_record is not None:
+            self._last_tool_record["result"] = result
+
     def _mount_tool(self, view: ToolView) -> None:
+        record = {"kind": "tool", "name": view.tool_name, "args": view.tool_args, "result": ""}
+        self._record(record)
         self._last_tool = view
+        self._last_tool_record = record
         self._tool_views.append(view)
         self.query_one("#chat", VerticalScroll).mount(view)
         self._scroll_end()
@@ -942,7 +1005,10 @@ class MybotApp(App):
     def _finish(self) -> None:
         self._stop_spinner()
         if self._thinking is not None:
-            self._thinking.finish()
+            elapsed = self._thinking.finish()
+            self._record(
+                {"kind": "thinking", "text": self._thinking._text, "elapsed": elapsed}
+            )
             self._thinking = None
         self.busy = False
         self._refresh_status()
@@ -1005,7 +1071,9 @@ class MybotApp(App):
 
     def action_leader(self) -> None:
         self._leader = True
-        self._note("leader: n new · q quit · t theme · m models · c compact · x export")
+        self._note(
+            "leader: n new · l sessions · u undo · r redo · t theme · m models · c compact · x export · q quit"
+        )
 
     def on_key(self, event) -> None:
         if not getattr(self, "_leader", False):
@@ -1019,9 +1087,102 @@ class MybotApp(App):
             "m": "models",
             "c": "compact",
             "x": "export",
+            "l": "sessions",
+            "u": "undo",
+            "r": "redo",
         }.get(event.key)
         if action:
             self._run_command(action)
+
+    def _push_undo(self) -> None:
+        if self.agent is None:
+            return
+        self._undo_stack.append((len(self.agent.messages), len(self._session().records)))
+        self._redo_stack.clear()
+
+    def action_undo(self) -> None:
+        if self.busy:
+            self._note("Busy.")
+            return
+        if self.agent is None or not self._undo_stack:
+            self._note("Nothing to undo.")
+            return
+        msg_len, rec_len = self._undo_stack.pop()
+        removed_msgs = self.agent.messages[msg_len:]
+        removed_recs = self._session().records[rec_len:]
+        del self.agent.messages[msg_len:]
+        del self._session().records[rec_len:]
+        self._redo_stack.append((msg_len, rec_len, removed_msgs, removed_recs))
+        self._rebuild_chat()
+        self._refresh_status()
+        self._note("Undid last turn.")
+
+    def action_redo(self) -> None:
+        if self.busy:
+            self._note("Busy.")
+            return
+        if self.agent is None or not self._redo_stack:
+            self._note("Nothing to redo.")
+            return
+        msg_len, rec_len, removed_msgs, removed_recs = self._redo_stack.pop()
+        self.agent.messages[msg_len:msg_len] = removed_msgs
+        self._session().records[rec_len:rec_len] = removed_recs
+        self._undo_stack.append((msg_len, rec_len))
+        self._rebuild_chat()
+        self._refresh_status()
+        self._note("Redid last turn.")
+
+    def _rebuild_chat(self) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        chat.remove_children()
+        self._thinking_views = []
+        self._tool_views = []
+        self._thinking = None
+        for record in self._session().records:
+            if "role" in record:
+                chat.mount(MessageView(record["role"], record["text"]))
+            elif record["kind"] == "thinking":
+                view = ThinkingView()
+                view.replay(record["text"], record.get("elapsed", 0.0))
+                view.display = self.show_thinking
+                self._thinking_views.append(view)
+                chat.mount(view)
+            elif record["kind"] == "tool":
+                view = ToolView(record["name"], record["args"], detailed=self.show_details)
+                view.set_result(record["result"])
+                self._tool_views.append(view)
+                chat.mount(view)
+            elif record["kind"] == "meta":
+                chat.mount(Static(record["text"], classes="meta"))
+        self._scroll_end()
+
+    def _sessions_command(self) -> None:
+        options = [
+            (f"{i + 1}. {session.title}", str(i)) for i, session in enumerate(self.sessions)
+        ]
+
+        def done(choice) -> None:
+            if choice is not None:
+                self._select_session(int(choice))
+
+        self.push_screen(Chooser("sessions", options), done)
+
+    def _select_session(self, index: int) -> None:
+        current = self._session()
+        current.tokens_in = self.tokens_in
+        current.tokens_out = self.tokens_out
+        current.context_tokens = self.context_tokens
+        self.index = index
+        session = self._session()
+        self.agent = session.agent
+        self.title = session.title
+        self.tokens_in = session.tokens_in
+        self.tokens_out = session.tokens_out
+        self.context_tokens = session.context_tokens
+        self.query_one(Sidebar).set_title(self.title)
+        self._rebuild_chat()
+        self._set_view("chat" if session.records else "home")
+        self._refresh_status()
 
     def action_reset(self) -> None:
         if self.agent is not None:
@@ -1029,19 +1190,21 @@ class MybotApp(App):
         self._note("History cleared.")
 
     def action_new(self) -> None:
-        if self.agent is not None:
-            self.agent.reset()
-        self.query_one("#chat", VerticalScroll).remove_children()
+        if self.busy:
+            self._note("Busy.")
+            return
+        agent = None
+        if is_configured():
+            try:
+                agent = Agent(system_prompt=self._system_prompt())
+            except Exception as exc:
+                self._note(f"error: {exc}")
+        self.sessions.append(Session(agent))
+        self._undo_stack = []
+        self._redo_stack = []
+        self._select_session(len(self.sessions) - 1)
         todo_write([])
-        sidebar = self.query_one(Sidebar)
-        sidebar.set_todos([])
-        sidebar.set_title("new session")
-        self.title = "new session"
-        self.tokens_in = 0
-        self.tokens_out = 0
-        self.context_tokens = 0
-        self._refresh_status()
-        self._set_view("home")
+        self.query_one(Sidebar).set_todos([])
         self._refresh_home_meta()
 
     def action_toggle_todos(self) -> None:
