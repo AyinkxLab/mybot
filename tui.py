@@ -436,6 +436,14 @@ class MybotApp(App):
     .role { height: 1; text-style: bold; color: $text-muted; }
     .msg.you .role { color: $primary; }
     .msg.mybot .role { color: $text-muted; }
+    Markdown { color: $foreground; link-color: $primary; link-style: underline; }
+    MarkdownH1, MarkdownH2, MarkdownH3 { color: $primary; text-style: bold; }
+    MarkdownH4, MarkdownH5, MarkdownH6 { color: $accent; text-style: bold; }
+    MarkdownBlockQuote { color: $text-muted; }
+    MarkdownBullet { color: $primary; }
+    MarkdownBlock > .code_inline { color: $accent; background: $surface; }
+    MarkdownFence { background: $surface; color: $foreground; }
+    MarkdownTableContent > .markdown-table--header { color: $primary; text-style: bold; }
     .tool { color: $warning; padding: 0 0 0 2; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; border-left: thick #4b5563; }
     .think-head { color: #6b7280; height: 1; }
