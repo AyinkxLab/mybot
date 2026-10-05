@@ -1,11 +1,15 @@
+import ipaddress
 import json
 import os
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
 from config import (
+    ALLOW_PRIVATE_HTTP,
     ALLOW_SHELL,
     GITHUB_API,
     GITHUB_TOKEN,
@@ -40,6 +44,7 @@ def _shell_env() -> dict:
 
 DESTRUCTIVE_SHELL_PATTERNS = (
     "git push",
+    "git.exe push",
     "gh pr create",
     "gh release",
     "gh repo delete",
@@ -50,6 +55,21 @@ DESTRUCTIVE_SHELL_PATTERNS = (
     "gh api -x patch",
     "gh api -x delete",
 )
+
+
+def _normalize_command(command: str) -> str:
+    cleaned = command.lower().replace('"', " ").replace("'", " ")
+    return " ".join(cleaned.split())
+
+
+def _is_destructive(command: str) -> bool:
+    normalized = _normalize_command(command)
+    if any(pattern in normalized for pattern in DESTRUCTIVE_SHELL_PATTERNS):
+        return True
+    tokens = normalized.split()
+    if "push" in tokens and any(token in {"git", "git.exe"} for token in tokens):
+        return True
+    return False
 
 
 def _safe_path(relative: str) -> Path:
@@ -95,8 +115,7 @@ def list_dir(path: str = ".") -> str:
 def run_shell(command: str) -> str:
     if not ALLOW_SHELL:
         return "ERROR: shell execution is disabled (ALLOW_SHELL=false)"
-    lowered = command.lower()
-    if REQUIRE_APPROVAL and any(pattern in lowered for pattern in DESTRUCTIVE_SHELL_PATTERNS):
+    if REQUIRE_APPROVAL and _is_destructive(command):
         if not _ask_approval(f"shell command: {command}"):
             return (
                 "DENIED: this command needs the user's approval. "
@@ -120,7 +139,34 @@ def run_shell(command: str) -> str:
     return _truncate(f"exit={result.returncode}\n{output}".strip())
 
 
+def _host_is_internal(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return True
+    return False
+
+
 def http_get(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "ERROR: only http(s) URLs are allowed"
+    if not ALLOW_PRIVATE_HTTP and _host_is_internal(parsed.hostname):
+        return "ERROR: blocked internal/loopback address (set ALLOW_PRIVATE_HTTP=true to allow)"
     try:
         resp = requests.get(url, timeout=30, headers={"User-Agent": "mybot/1.0"})
     except Exception as exc:
@@ -139,7 +185,12 @@ def github_request(method: str, path: str, body=None) -> str:
             "DENIED: this GitHub write action needs the user's approval. "
             "Explain what it would do and ask the user to approve."
         )
-    url = path if path.startswith("http") else GITHUB_API + path
+    if path.startswith("http"):
+        if not path.startswith(GITHUB_API):
+            return "ERROR: github_request may only call https://api.github.com"
+        url = path
+    else:
+        url = GITHUB_API + (path if path.startswith("/") else "/" + path)
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
