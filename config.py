@@ -30,11 +30,21 @@ LLM_MODEL = _auth.get("model") or LLM_MODEL
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").strip().lower() not in {"0", "false", "no", "off"}
+ALLOW_PRIVATE_HTTP = os.getenv("ALLOW_PRIVATE_HTTP", "false").strip().lower() in {"1", "true", "yes", "on"}
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_API = "https://api.github.com"
+
+
+def _id_set(value: str) -> set:
+    return {int(token) for token in value.replace(",", " ").split() if token.strip().isdigit()}
+
+
+TELEGRAM_ALLOWED_IDS = _id_set(os.getenv("TELEGRAM_ALLOWED_IDS", ""))
+DISCORD_ALLOWED_IDS = _id_set(os.getenv("DISCORD_ALLOWED_IDS", ""))
 
 SYSTEM_PROMPT = """You are a capable personal assistant bot running on the user's \
 Windows machine. You help with conversation, questions, files, code, automation, and \

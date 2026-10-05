@@ -1,6 +1,11 @@
 openai>=1.40.0
 python-dotenv>=1.0.1
 requests>=2.32.0
+Pillow>=10.0.0
 
 # Optional: needed for the gui_* desktop-control tools
 pyautogui>=0.9.54
+
+# Optional: needed for the chat adapters
+python-telegram-bot>=21.0
+discord.py>=2.4.0

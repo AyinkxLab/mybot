@@ -23,8 +23,10 @@ class Agent:
         self.messages = [self.messages[0]]
 
     def _trim(self) -> None:
-        if len(self.messages) > self.history_limit:
-            self.messages = [self.messages[0]] + self.messages[-self.history_limit :]
+        user_indices = [i for i, msg in enumerate(self.messages) if msg.get("role") == "user"]
+        if len(user_indices) > self.history_limit:
+            cut = user_indices[len(user_indices) - self.history_limit]
+            self.messages = [self.messages[0]] + self.messages[cut:]
 
     def respond(self, user_text: str, on_event=None) -> str:
         def emit(event):
