@@ -1,6 +1,7 @@
 import sys
 
 from agent import Agent
+from auth import PROVIDERS, is_configured, save_auth
 from tools import set_approval_handler
 
 
@@ -15,6 +16,37 @@ def _approve(action: str) -> bool:
 set_approval_handler(_approve)
 
 
+def _connect() -> bool:
+    names = list(PROVIDERS)
+    print("providers: " + ", ".join(names))
+    provider = input("provider [deepseek]: ").strip().lower() or "deepseek"
+    preset = PROVIDERS.get(provider, {})
+    base_url = preset.get("base_url", "") or input("base URL: ").strip()
+
+    api_key = input("API key: ").strip()
+    if not api_key:
+        print("no key entered, cancelled")
+        return False
+
+    models = preset.get("models", [])
+    if models:
+        for index, name in enumerate(models, 1):
+            print(f"  {index}) {name}")
+        choice = input(f"model [1]: ").strip() or "1"
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            model = models[int(choice) - 1]
+        else:
+            model = choice
+    else:
+        model = input("model: ").strip()
+
+    save_auth(
+        {"provider": provider, "base_url": base_url, "api_key": api_key, "model": model}
+    )
+    print(f"connected: {provider} / {model}")
+    return True
+
+
 def _print_event(event: dict) -> None:
     if event["type"] == "tool":
         print(f"  [tool] {event['name']}({event['args']})", file=sys.stderr)
@@ -24,13 +56,17 @@ def _print_event(event: dict) -> None:
 
 
 def main() -> None:
-    print("mybot ready. Commands: /reset, /exit")
-    try:
-        agent = Agent()
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        print("Set LLM_API_KEY in .env (see .env.example), then try again.")
-        return
+    print("mybot ready. Commands: /connect, /reset, /exit")
+    agent = None
+    if is_configured():
+        try:
+            agent = Agent()
+            print(f"model: {agent.model}")
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+    else:
+        print("not connected yet - run /connect to enter your API key.")
+
     while True:
         try:
             text = input("\nyou> ").strip()
@@ -41,9 +77,19 @@ def main() -> None:
             continue
         if text in {"/exit", "/quit"}:
             break
-        if text == "/reset":
+        if text == "/connect":
+            if _connect():
+                try:
+                    agent = Agent()
+                except Exception as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+            continue
+        if text == "/reset" and agent is not None:
             agent.reset()
             print("history cleared")
+            continue
+        if agent is None:
+            print("not connected. Run /connect first.", file=sys.stderr)
             continue
         try:
             answer = agent.respond(text, on_event=_print_event)

@@ -1,5 +1,6 @@
 # Secrets
 .env
+.mybot_config.json
 
 # Python
 __pycache__/

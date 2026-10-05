@@ -1,5 +1,6 @@
 from openai import OpenAI
 
+from auth import load_auth
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, SYSTEM_PROMPT
 from tools import TOOL_SPECS, execute_tool
 
@@ -8,11 +9,13 @@ MAX_TOOL_ROUNDS = 12
 
 class Agent:
     def __init__(self, system_prompt: str = SYSTEM_PROMPT, history_limit: int = 40):
-        if not LLM_API_KEY:
-            raise RuntimeError(
-                "LLM_API_KEY is not set. Copy .env.example to .env and fill it in."
-            )
-        self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        auth = load_auth()
+        api_key = auth.get("api_key") or LLM_API_KEY
+        self.base_url = auth.get("base_url") or LLM_BASE_URL
+        self.model = auth.get("model") or LLM_MODEL
+        if not api_key:
+            raise RuntimeError("No API key set. Run /connect to add your provider key.")
+        self.client = OpenAI(api_key=api_key, base_url=self.base_url)
         self.history_limit = history_limit
         self.messages = [{"role": "system", "content": system_prompt}]
 
@@ -32,7 +35,7 @@ class Agent:
 
         for _ in range(MAX_TOOL_ROUNDS):
             completion = self.client.chat.completions.create(
-                model=LLM_MODEL,
+                model=self.model,
                 messages=self.messages,
                 tools=TOOL_SPECS,
                 tool_choice="auto",

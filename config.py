@@ -3,6 +3,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from auth import load_auth
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -19,6 +21,11 @@ def _resolve_workspace(value: str) -> Path:
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+_auth = load_auth()
+LLM_API_KEY = _auth.get("api_key") or LLM_API_KEY
+LLM_BASE_URL = _auth.get("base_url") or LLM_BASE_URL
+LLM_MODEL = _auth.get("model") or LLM_MODEL
 
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}

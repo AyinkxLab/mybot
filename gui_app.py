@@ -1,9 +1,9 @@
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext, ttk
 
 from agent import Agent
-from config import LLM_MODEL
+from auth import PROVIDERS, is_configured, save_auth
 from tools import set_approval_handler
 
 
@@ -25,9 +25,25 @@ class App:
         self.entry.pack(side="left", fill="x", expand=True)
         self.entry.bind("<Return>", lambda _event: self.send())
         tk.Button(frame, text="Send", command=self.send).pack(side="left", padx=(6, 0))
+        tk.Button(frame, text="Connect", command=self.connect_dialog).pack(side="left", padx=(6, 0))
 
         set_approval_handler(self.approve)
-        self.log(f"mybot ready (model: {LLM_MODEL}). Type a task, /reset to clear history.\n")
+
+        if is_configured():
+            self._ensure_agent()
+        else:
+            self.log("not connected. Click Connect to enter your API key.\n")
+
+    def _ensure_agent(self) -> bool:
+        if self.agent is not None:
+            return True
+        try:
+            self.agent = Agent()
+            self.log(f"connected (model: {self.agent.model}). Type a task, /reset to clear.\n")
+            return True
+        except Exception as exc:
+            self.log(f"not connected: {exc}")
+            return False
 
     def log(self, text: str) -> None:
         self.output.configure(state="normal")
@@ -47,6 +63,64 @@ class App:
         event.wait()
         return bool(result.get("ok", False))
 
+    def connect_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Connect provider")
+        dialog.geometry("420x260")
+        dialog.grab_set()
+
+        names = list(PROVIDERS)
+        tk.Label(dialog, text="Provider").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        provider_box = ttk.Combobox(dialog, values=names, state="readonly")
+        provider_box.set("deepseek")
+        provider_box.grid(row=0, column=1, sticky="ew", padx=10, pady=6)
+
+        tk.Label(dialog, text="API key").grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        key_entry = tk.Entry(dialog, show="*")
+        key_entry.grid(row=1, column=1, sticky="ew", padx=10, pady=6)
+
+        tk.Label(dialog, text="Version / model").grid(row=2, column=0, sticky="w", padx=10, pady=6)
+        model_box = ttk.Combobox(dialog, values=PROVIDERS["deepseek"]["models"])
+        model_box.set(PROVIDERS["deepseek"]["models"][0])
+        model_box.grid(row=2, column=1, sticky="ew", padx=10, pady=6)
+
+        tk.Label(dialog, text="Base URL").grid(row=3, column=0, sticky="w", padx=10, pady=6)
+        url_entry = tk.Entry(dialog)
+        url_entry.insert(0, PROVIDERS["deepseek"]["base_url"])
+        url_entry.grid(row=3, column=1, sticky="ew", padx=10, pady=6)
+
+        dialog.columnconfigure(1, weight=1)
+
+        def on_provider(_event=None) -> None:
+            preset = PROVIDERS.get(provider_box.get(), {})
+            models = preset.get("models", [])
+            model_box.configure(values=models)
+            if models:
+                model_box.set(models[0])
+            url_entry.delete(0, "end")
+            url_entry.insert(0, preset.get("base_url", ""))
+
+        provider_box.bind("<<ComboboxSelected>>", on_provider)
+
+        def save() -> None:
+            api_key = key_entry.get().strip()
+            if not api_key:
+                messagebox.showwarning("mybot", "Enter an API key.", parent=dialog)
+                return
+            save_auth(
+                {
+                    "provider": provider_box.get(),
+                    "base_url": url_entry.get().strip(),
+                    "api_key": api_key,
+                    "model": model_box.get().strip(),
+                }
+            )
+            self.agent = None
+            dialog.destroy()
+            self._ensure_agent()
+
+        tk.Button(dialog, text="Save", command=save).grid(row=4, column=1, sticky="e", padx=10, pady=12)
+
     def send(self) -> None:
         if self.busy:
             return
@@ -57,9 +131,14 @@ class App:
         if text in {"/exit", "/quit"}:
             self.root.destroy()
             return
+        if text == "/connect":
+            self.connect_dialog()
+            return
         if text == "/reset" and self.agent is not None:
             self.agent.reset()
             self.log("history cleared")
+            return
+        if not self._ensure_agent():
             return
         self.log(f"you> {text}")
         self.busy = True
@@ -67,8 +146,6 @@ class App:
 
     def _run(self, text: str) -> None:
         try:
-            if self.agent is None:
-                self.agent = Agent()
             answer = self.agent.respond(text, on_event=self._event)
         except Exception as exc:
             answer = f"error: {exc}"
