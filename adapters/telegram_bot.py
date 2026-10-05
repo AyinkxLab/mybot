@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import threading
 
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -9,19 +10,26 @@ from config import MAX_SESSIONS, TELEGRAM_ALLOWED_IDS, TELEGRAM_TOKEN
 from tools import set_approval_handler
 
 _sessions: dict[int, Agent] = {}
-_approvals: set = set()
-_last_request = {"action": None}
+_approvals: dict = {}
+_last_request: dict = {}
+_ctx = threading.local()
 
 
 def _approve(action: str) -> bool:
-    if action in _approvals:
-        _approvals.discard(action)
+    chat_id = getattr(_ctx, "chat_id", None)
+    key = (chat_id, action)
+    if _approvals.pop(key, False):
         return True
-    _last_request["action"] = action
+    _last_request[chat_id] = action
     return False
 
 
 set_approval_handler(_approve)
+
+
+def _respond(chat_id: int, text: str) -> str:
+    _ctx.chat_id = chat_id
+    return _agent_for(chat_id).respond(text)
 
 
 def _agent_for(chat_id: int) -> Agent:
@@ -49,16 +57,16 @@ async def _on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("history cleared")
         return
     if text == "/approve":
-        action = _last_request["action"]
+        action = _last_request.get(chat_id)
         if not action:
             await update.message.reply_text("nothing is waiting for approval")
             return
-        _approvals.add(action)
+        _approvals[(chat_id, action)] = True
         await update.message.reply_text("approved. proceeding.")
         text = "Approved. Proceed with the action you requested approval for."
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        answer = await asyncio.to_thread(_agent_for(chat_id).respond, text)
+        answer = await asyncio.to_thread(_respond, chat_id, text)
     except Exception as exc:
         answer = f"error: {exc}"
     await update.message.reply_text(answer[:4000] or "(no reply)")

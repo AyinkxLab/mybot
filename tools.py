@@ -259,6 +259,8 @@ def schedule_task(name: str, command: str, schedule: str = "DAILY", time: str = 
     allowed = {"MINUTE", "HOURLY", "DAILY", "WEEKLY", "ONCE", "ONLOGON", "ONSTART"}
     if schedule not in allowed:
         return f"ERROR: schedule must be one of {sorted(allowed)}"
+    if REQUIRE_APPROVAL and not _ask_approval(f"create scheduled task: {name} -> {command}"):
+        return "DENIED: creating a scheduled task needs the user's approval."
     cmd = ["schtasks", "/Create", "/TN", name, "/TR", command, "/SC", schedule, "/F"]
     if schedule in {"DAILY", "WEEKLY", "ONCE", "MINUTE", "HOURLY"} and time:
         cmd += ["/ST", time]
@@ -285,6 +287,8 @@ def list_tasks(filter_text: str = "") -> str:
 
 
 def delete_task(name: str) -> str:
+    if REQUIRE_APPROVAL and not _ask_approval(f"delete scheduled task: {name}"):
+        return "DENIED: deleting a scheduled task needs the user's approval."
     try:
         result = subprocess.run(
             ["schtasks", "/Delete", "/TN", name, "/F"], capture_output=True, text=True, timeout=60
