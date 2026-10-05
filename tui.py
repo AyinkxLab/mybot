@@ -12,7 +12,15 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from agent import Agent
-from auth import PROVIDERS, is_configured, list_models, load_auth, save_auth
+from auth import (
+    AUTH_PATH,
+    PROVIDERS,
+    is_configured,
+    list_models,
+    load_auth,
+    looks_like_api_key,
+    save_auth,
+)
 from config import REQUIRE_APPROVAL, WORKSPACE
 from tools import set_approval_handler
 
@@ -176,20 +184,28 @@ def _connect() -> bool:
     names = list(PROVIDERS)
     for index, name in enumerate(names, 1):
         console.print(f"  [cyan]{index}[/]) {name}")
-    choice = Prompt.ask("provider", default="deepseek").strip().lower()
-    if choice.isdigit() and 1 <= int(choice) <= len(names):
-        provider = names[int(choice) - 1]
+
+    pre_key = ""
+    raw = Prompt.ask("provider (or paste your API key)", default="deepseek").strip()
+    if raw.isdigit() and 1 <= int(raw) <= len(names):
+        provider = names[int(raw) - 1]
+    elif raw.lower() in PROVIDERS:
+        provider = raw.lower()
+    elif looks_like_api_key(raw):
+        provider = "deepseek"
+        pre_key = raw
+        console.print(f"[yellow]that looks like a key - using provider[/] [bold]{provider}[/]")
     else:
-        provider = choice
-    if provider not in PROVIDERS:
-        console.print(f"[red]unknown provider:[/] {provider}")
-        return False
+        provider = raw.lower()
+        while provider not in PROVIDERS:
+            console.print(f"[red]unknown provider:[/] {provider}")
+            provider = Prompt.ask("provider", default="deepseek").strip().lower()
 
     preset = PROVIDERS[provider]
     base_url = Prompt.ask("base URL", default=preset.get("base_url", ""))
-    api_key = Prompt.ask("API key", password=True).strip()
+    api_key = pre_key or Prompt.ask("API key", password=True).strip()
     if not api_key:
-        console.print("[red]no key entered[/]")
+        console.print("[red]no key entered, nothing saved[/]")
         return False
 
     console.print("[dim]asking the provider for available models...[/]")
@@ -206,7 +222,8 @@ def _connect() -> bool:
             model = pick
 
     save_auth({"provider": provider, "base_url": base_url, "api_key": api_key, "model": model})
-    console.print(f"[green]connected[/] {provider} / [bold]{model}[/]\n")
+    console.print(f"[green]saved[/] {provider} / [bold]{model}[/]")
+    console.print(f"[dim]stored in {AUTH_PATH} - reused automatically next time[/]\n")
     return True
 
 

@@ -1,7 +1,15 @@
 import sys
 
 from agent import Agent
-from auth import PROVIDERS, is_configured, list_models, load_auth, save_auth
+from auth import (
+    AUTH_PATH,
+    PROVIDERS,
+    is_configured,
+    list_models,
+    load_auth,
+    looks_like_api_key,
+    save_auth,
+)
 from tools import set_approval_handler
 
 
@@ -19,14 +27,23 @@ set_approval_handler(_approve)
 def _connect() -> bool:
     names = list(PROVIDERS)
     print("providers: " + ", ".join(names))
-    provider = input("provider (Enter for deepseek): ").strip().lower() or "deepseek"
-    while provider not in PROVIDERS:
-        print(f"unknown provider '{provider}'. pick one of: {', '.join(names)}")
-        provider = input("provider (Enter for deepseek): ").strip().lower() or "deepseek"
+    pre_key = ""
+    raw = input("provider (Enter for deepseek, or paste your key): ").strip()
+    if not raw or raw.lower() in PROVIDERS:
+        provider = raw.lower() or "deepseek"
+    elif looks_like_api_key(raw):
+        provider = "deepseek"
+        pre_key = raw
+        print(f"that looks like a key - using provider {provider}")
+    else:
+        provider = raw.lower()
+        while provider not in PROVIDERS:
+            print(f"unknown provider '{provider}'. pick one of: {', '.join(names)}")
+            provider = input("provider (Enter for deepseek): ").strip().lower() or "deepseek"
     preset = PROVIDERS[provider]
     base_url = preset.get("base_url", "") or input("base URL: ").strip()
 
-    api_key = input("API key: ").strip()
+    api_key = pre_key or input("API key: ").strip()
     if not api_key:
         print("no key entered, cancelled")
         return False
@@ -52,6 +69,7 @@ def _connect() -> bool:
         {"provider": provider, "base_url": base_url, "api_key": api_key, "model": model}
     )
     print(f"connected: {provider} / {model}")
+    print(f"saved to {AUTH_PATH} - reused automatically next time")
     return True
 
 
