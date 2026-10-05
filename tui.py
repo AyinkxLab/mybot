@@ -327,12 +327,13 @@ class MybotApp(App):
     #model-row Select { width: 1fr; }
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
     #home { height: 1fr; align: center middle; }
-    #logo { text-align: center; height: auto; }
-    #home-input { width: 72; border: solid #30303a; border-left: thick #4c8bf5; background: #14141b; }
+    #logo { width: 72; text-align: center; height: auto; }
+    #home-input { width: 72; border: solid #30303a; border-left: thick #4c8bf5; background: #14141b; color: #c9d1d9; }
     #home-input:focus { border: solid #3a3a48; border-left: thick #4c8bf5; }
-    #home-meta { text-align: center; margin: 1 0 0 0; height: auto; }
-    #home-hint { text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
-    #home-tip { text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
+    #home-input .input--placeholder, #prompt .input--placeholder { color: #6b7280; }
+    #home-meta { width: 72; text-align: center; margin: 1 0 0 0; height: auto; }
+    #home-hint { width: 72; text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
+    #home-tip { width: 72; text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
     #version { dock: bottom; height: 1; text-align: right; color: $text-muted; padding: 0 1; }
     Chooser { align: center middle; }
     #palette { width: 60; height: auto; max-height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
