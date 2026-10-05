@@ -31,7 +31,9 @@ saved to `.mybot_config.json` (gitignored). You can also set `LLM_API_KEY`,
 
 ## Running it
 
-- **Full-screen TUI (default):** `python tui.py`, or type `mybot` if the folder is on your `PATH`.
+- **Full-screen TUI (default):** type `mybot` from any directory. The repo folder is added to
+  your `PATH`; `mybot.cmd` (cmd/PowerShell), the extensionless `mybot` (Git Bash), and a
+  PowerShell profile function all launch it. You can also run `python tui.py`.
 - **Plain CLI:** `python main.py` (or `mybot-cli`).
 - **Desktop app:** `mybot-gui.cmd` (or the desktop shortcut) opens a tkinter chat window.
 
