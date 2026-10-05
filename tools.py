@@ -5,7 +5,13 @@ from pathlib import Path
 
 import requests
 
-from config import ALLOW_SHELL, GITHUB_API, GITHUB_TOKEN, WORKSPACE
+from config import (
+    ALLOW_SHELL,
+    GITHUB_API,
+    GITHUB_TOKEN,
+    REQUIRE_APPROVAL,
+    WORKSPACE,
+)
 
 MAX_OUTPUT = 8000
 
@@ -90,7 +96,7 @@ def run_shell(command: str) -> str:
     if not ALLOW_SHELL:
         return "ERROR: shell execution is disabled (ALLOW_SHELL=false)"
     lowered = command.lower()
-    if any(pattern in lowered for pattern in DESTRUCTIVE_SHELL_PATTERNS):
+    if REQUIRE_APPROVAL and any(pattern in lowered for pattern in DESTRUCTIVE_SHELL_PATTERNS):
         if not _ask_approval(f"shell command: {command}"):
             return (
                 "DENIED: this command needs the user's approval. "
@@ -128,7 +134,7 @@ def github_request(method: str, path: str, body=None) -> str:
     method = method.upper()
     if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
         return f"ERROR: unsupported method: {method}"
-    if method != "GET" and not _ask_approval(f"GitHub {method} {path}"):
+    if REQUIRE_APPROVAL and method != "GET" and not _ask_approval(f"GitHub {method} {path}"):
         return (
             "DENIED: this GitHub write action needs the user's approval. "
             "Explain what it would do and ask the user to approve."
@@ -145,6 +151,97 @@ def github_request(method: str, path: str, body=None) -> str:
     except Exception as exc:
         return f"ERROR: {exc}"
     return _truncate(f"status={resp.status_code}\n{resp.text}")
+
+
+def launch_app(target: str) -> str:
+    try:
+        os.startfile(target)  # noqa: S606 - Windows shell open
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    return f"Launched: {target}"
+
+
+def _pyautogui():
+    try:
+        import pyautogui
+    except ImportError:
+        return None
+    return pyautogui
+
+
+def gui_click(x: int, y: int) -> str:
+    pg = _pyautogui()
+    if pg is None:
+        return "ERROR: gui tools need pyautogui (pip install pyautogui)"
+    pg.click(int(x), int(y))
+    return f"Clicked at {x},{y}"
+
+
+def gui_type(text: str) -> str:
+    pg = _pyautogui()
+    if pg is None:
+        return "ERROR: gui tools need pyautogui (pip install pyautogui)"
+    pg.write(text, interval=0.02)
+    return f"Typed {len(text)} chars"
+
+
+def gui_hotkey(keys: list) -> str:
+    pg = _pyautogui()
+    if pg is None:
+        return "ERROR: gui tools need pyautogui (pip install pyautogui)"
+    pg.hotkey(*keys)
+    return f"Pressed {'+'.join(keys)}"
+
+
+def gui_screenshot(path: str = "screenshot.png") -> str:
+    pg = _pyautogui()
+    if pg is None:
+        return "ERROR: gui tools need pyautogui (pip install pyautogui)"
+    target = _safe_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pg.screenshot(str(target))
+    return f"Saved screenshot to {path}"
+
+
+def schedule_task(name: str, command: str, schedule: str = "DAILY", time: str = "09:00") -> str:
+    schedule = schedule.upper()
+    allowed = {"MINUTE", "HOURLY", "DAILY", "WEEKLY", "ONCE", "ONLOGON", "ONSTART"}
+    if schedule not in allowed:
+        return f"ERROR: schedule must be one of {sorted(allowed)}"
+    cmd = ["schtasks", "/Create", "/TN", name, "/TR", command, "/SC", schedule, "/F"]
+    if schedule in {"DAILY", "WEEKLY", "ONCE", "MINUTE", "HOURLY"} and time:
+        cmd += ["/ST", time]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    output = (result.stdout or "") + (result.stderr or "")
+    return _truncate(f"exit={result.returncode}\n{output}".strip())
+
+
+def list_tasks(filter_text: str = "") -> str:
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/FO", "TABLE"], capture_output=True, text=True, timeout=60
+        )
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    output = (result.stdout or "") + (result.stderr or "")
+    if filter_text:
+        lines = [line for line in output.splitlines() if filter_text.lower() in line.lower()]
+        output = "\n".join(lines)
+    return _truncate(output)
+
+
+def delete_task(name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Delete", "/TN", name, "/F"], capture_output=True, text=True, timeout=60
+        )
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    output = (result.stdout or "") + (result.stderr or "")
+    return _truncate(f"exit={result.returncode}\n{output}".strip())
 
 
 TOOL_SPECS = [
@@ -240,6 +337,114 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "launch_app",
+            "description": "Open a program, file, folder, or URL with its default application.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Path, executable, or URL to open"}
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gui_click",
+            "description": "Move the mouse and click at screen coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gui_type",
+            "description": "Type text at the current focus using the keyboard.",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gui_hotkey",
+            "description": "Press a key combination, e.g. ['ctrl', 's'].",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gui_screenshot",
+            "description": "Capture the screen and save it into the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Output path"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": "Create a Windows scheduled task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "command": {"type": "string", "description": "Program/command to run"},
+                    "schedule": {
+                        "type": "string",
+                        "enum": ["MINUTE", "HOURLY", "DAILY", "WEEKLY", "ONCE", "ONLOGON", "ONSTART"],
+                    },
+                    "time": {"type": "string", "description": "Start time HH:MM, e.g. 09:00"},
+                },
+                "required": ["name", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tasks",
+            "description": "List Windows scheduled tasks, optionally filtered by text.",
+            "parameters": {
+                "type": "object",
+                "properties": {"filter_text": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_task",
+            "description": "Delete a Windows scheduled task by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -249,6 +454,14 @@ _DISPATCH = {
     "run_shell": run_shell,
     "http_get": http_get,
     "github_request": github_request,
+    "launch_app": launch_app,
+    "gui_click": gui_click,
+    "gui_type": gui_type,
+    "gui_hotkey": gui_hotkey,
+    "gui_screenshot": gui_screenshot,
+    "schedule_task": schedule_task,
+    "list_tasks": list_tasks,
+    "delete_task": delete_task,
 }
 
 

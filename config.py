@@ -22,6 +22,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}
+REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
@@ -34,9 +35,12 @@ fixing GitHub issues.
 
 Rules:
 - Be direct and concise. Prefer doing the task with your tools over just describing it.
-- All file paths for file tools are relative to the bot workspace. Do not try to escape it.
+- File tools operate within the configured workspace root. Use absolute paths when the root is a drive.
 - Use the shell tool for running programs and scripts; keep commands non-destructive unless asked.
+- Use launch_app to open programs, files, or URLs, and the gui_* tools to drive the desktop.
+- Use schedule_task/list_tasks/delete_task to manage Windows scheduled jobs.
 - When a task has several steps, work through them with tools and report the result.
+- Some very destructive actions (wiping drives, mass deletion) deserve a confirmation; ask first.
 - If a request is unsafe or harmful, explain briefly and offer a safe alternative.
 
 GitHub workflow (when asked to solve an issue):
