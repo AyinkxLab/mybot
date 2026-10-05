@@ -19,8 +19,11 @@ set_approval_handler(_approve)
 def _connect() -> bool:
     names = list(PROVIDERS)
     print("providers: " + ", ".join(names))
-    provider = input("provider [deepseek]: ").strip().lower() or "deepseek"
-    preset = PROVIDERS.get(provider, {})
+    provider = input("provider (Enter for deepseek): ").strip().lower() or "deepseek"
+    while provider not in PROVIDERS:
+        print(f"unknown provider '{provider}'. pick one of: {', '.join(names)}")
+        provider = input("provider (Enter for deepseek): ").strip().lower() or "deepseek"
+    preset = PROVIDERS[provider]
     base_url = preset.get("base_url", "") or input("base URL: ").strip()
 
     api_key = input("API key: ").strip()
