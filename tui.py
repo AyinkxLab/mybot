@@ -81,6 +81,27 @@ HELP = """[b]commands[/]
 
 The model plans multi-step work with a todo list shown in the sidebar."""
 
+BANNER = [
+    "███╗   ███╗██╗   ██╗██████╗  ██████╗ ████████╗",
+    "████╗ ████║╚██╗ ██╔╝██╔══██╗██╔═══██╗╚══██╔══╝",
+    "██╔████╔██║ ╚████╔╝ ██████╔╝██║   ██║   ██║   ",
+    "██║╚██╔╝██║  ╚██╔╝  ██╔══██╗██║   ██║   ██║   ",
+    "██║ ╚═╝ ██║   ██║   ██████╔╝╚██████╔╝   ██║   ",
+    "╚═╝     ╚═╝   ╚═╝   ╚═════╝  ╚═════╝    ╚═╝   ",
+]
+BANNER_COLORS = ["#f5f3ff", "#ddd6fe", "#c4b5fd", "#a78bfa", "#8b5cf6", "#7c3aed"]
+VERSION = "mybot 0.1.0"
+HOME_PLACEHOLDER = 'Ask anything...  "What is the tech stack of this project?"'
+HOME_HINT = "tab agents      ctrl+p commands"
+HOME_TIP = "● Tip   Set REQUIRE_APPROVAL=true to gate risky commands"
+
+
+def _logo() -> Text:
+    text = Text(justify="center")
+    for index, line in enumerate(BANNER):
+        text.append(line + "\n", style=f"bold {BANNER_COLORS[index % len(BANNER_COLORS)]}")
+    return text
+
 
 class MessageView(Vertical):
     def __init__(self, role: str, text: str = "") -> None:
@@ -285,6 +306,13 @@ class MybotApp(App):
     #model-row { height: auto; }
     #model-row Select { width: 1fr; }
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
+    #home { height: 1fr; align: center middle; }
+    #logo { text-align: center; height: auto; }
+    #home-input { width: 72; border: tall $primary; background: $panel; }
+    #home-meta { text-align: center; margin: 1 0 0 0; height: auto; }
+    #home-hint { text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
+    #home-tip { text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
+    #version { dock: bottom; height: 1; text-align: right; color: $text-muted; padding: 0 1; }
     Chooser { align: center middle; }
     #palette { width: 60; height: auto; max-height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
     #palette-title { text-style: bold; color: $primary; margin: 0 0 1 0; }
@@ -306,6 +334,7 @@ class MybotApp(App):
         self.agent = None
         self.busy = False
         self.mode = "build"
+        self.view = "home"
         self.tokens_in = 0
         self.tokens_out = 0
         self._last_tool = None
@@ -316,7 +345,14 @@ class MybotApp(App):
         with Horizontal(id="main"):
             yield VerticalScroll(id="chat")
             yield TodoPanel(id="todos")
+        with Vertical(id="home"):
+            yield Static(_logo(), id="logo")
+            yield Input(placeholder=HOME_PLACEHOLDER, id="home-input")
+            yield Static("", id="home-meta")
+            yield Static(HOME_HINT, id="home-hint")
+            yield Static(HOME_TIP, id="home-tip")
         yield Input(placeholder="Ask mybot anything...", id="prompt")
+        yield Static(VERSION, id="version")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -330,11 +366,8 @@ class MybotApp(App):
                 self._note(f"error: {exc}")
         self._refresh_topbar()
         self.query_one(TodoPanel).refresh_todos(get_todos())
-        if self.agent is None:
-            self._note("Not connected. Type /connect to add your API key.")
-        else:
-            self._note(f"Connected: {self.agent.model}. Type /help for shortcuts.")
-        self.query_one("#prompt", Input).focus()
+        self._set_view("home")
+        self._refresh_home_meta()
 
     def _register_themes(self) -> None:
         self.register_theme(
@@ -441,6 +474,33 @@ class MybotApp(App):
             return None
         return self.tokens_in / 1e6 * price[0] + self.tokens_out / 1e6 * price[1]
 
+    def _set_view(self, view: str) -> None:
+        self.view = view
+        chat = view == "chat"
+        self.query_one("#topbar").display = chat
+        self.query_one("#main").display = chat
+        self.query_one("#prompt").display = chat
+        self.query_one(Footer).display = chat
+        self.query_one("#home").display = not chat
+        self.query_one("#version").display = not chat
+        if chat:
+            self.query_one("#prompt", Input).focus()
+        else:
+            self.query_one("#home-input", Input).focus()
+
+    def _refresh_home_meta(self) -> None:
+        meta = Text(justify="center")
+        if self.agent is not None:
+            provider = load_auth().get("provider", "")
+            meta.append(f"{self.mode.capitalize()} ", style="bold #c4b5fd")
+            meta.append("auto · ", style="#6b7280")
+            meta.append(self.agent.model, style="#e5e7eb")
+            if provider:
+                meta.append(f"  {provider}", style="#6b7280")
+        else:
+            meta.append("not connected · type /connect to add an API key", style="#eab308")
+        self.query_one("#home-meta", Static).update(meta)
+
     def _scroll_end(self) -> None:
         try:
             self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
@@ -448,17 +508,21 @@ class MybotApp(App):
             pass
 
     def _note(self, text: str) -> None:
+        if self.view == "home":
+            self._set_view("chat")
         self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", text))
         self._scroll_end()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        self.query_one("#prompt", Input).value = ""
+        event.input.value = ""
         if not text or self.busy:
             return
         if text.startswith("/"):
             self._command(text)
             return
+        if self.view == "home":
+            self._set_view("chat")
         chat = self.query_one("#chat", VerticalScroll)
         chat.mount(MessageView("you", text))
         assistant = MessageView("mybot", "")
@@ -516,6 +580,7 @@ class MybotApp(App):
                 self._note(f"error: {exc}")
                 return
             self._refresh_topbar()
+            self._refresh_home_meta()
             self._note(f"Connected: {self.agent.model}")
 
         self.push_screen(ConnectScreen(), done)
@@ -543,6 +608,7 @@ class MybotApp(App):
                 self._note(f"error: {exc}")
                 return
             self._refresh_topbar()
+            self._refresh_home_meta()
             self._note(f"Model set to {choice}")
 
         self.push_screen(Chooser("select model", [(m, m) for m in models]), done)
@@ -565,6 +631,7 @@ class MybotApp(App):
             if self.agent is not None:
                 self.agent.messages[0]["content"] = self._system_prompt()
             self._refresh_topbar()
+            self._refresh_home_meta()
             self._note(f"Agent mode: {choice}")
 
         self.push_screen(
@@ -657,8 +724,9 @@ class MybotApp(App):
         self.query_one(TodoPanel).refresh_todos([])
         self.tokens_in = 0
         self.tokens_out = 0
-        self._note("New session.")
         self._refresh_topbar()
+        self._set_view("home")
+        self._refresh_home_meta()
 
     def action_toggle_todos(self) -> None:
         panel = self.query_one(TodoPanel)
