@@ -127,6 +127,7 @@ class StreamView:
                 console=console,
                 refresh_per_second=15,
                 vertical_overflow="visible",
+                transient=True,
             )
             self.live.start()
 
