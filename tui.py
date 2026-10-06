@@ -188,10 +188,13 @@ HELP = """[b]commands[/]
 
 [b]keys[/]
   enter   send           ctrl+j  newline in the prompt
-  up/down recall previous prompts
+  up/down recall previous prompts      ctrl+l  clear the prompt
+  ctrl+a/e line start/end  ctrl+u/k delete line  ctrl+w delete word  ctrl+z/y undo/redo
   tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
   ctrl+x  leader (n l u r t m c x q)                 ctrl+t  theme
-  ctrl+n  new session    esc     cancel run          ctrl+c  quit
+  ctrl+up/down, pgup/pgdn scroll    ctrl+home/end top/bottom
+  f1      help           ctrl+n  new session        esc     cancel run
+  ctrl+c / ctrl+q quit   (mouse wheel scrolls; select with the mouse to copy)
 
 The model plans multi-step work with a todo list shown in the sidebar."""
 
@@ -822,7 +825,9 @@ class MybotApp(App):
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "quit"),
+        Binding("ctrl+q", "quit", "quit", show=False),
         Binding("tab", "mode", "mode"),
+        Binding("f1", "show_help", "help", show=False),
         Binding("ctrl+p", "palette", "palette"),
         Binding("ctrl+x", "leader", "leader", show=False),
         Binding("ctrl+t", "theme", "theme"),
@@ -830,6 +835,13 @@ class MybotApp(App):
         Binding("ctrl+n", "new", "new"),
         Binding("escape", "cancel", "cancel", show=False),
         Binding("ctrl+r", "reset", "reset", show=False),
+        Binding("ctrl+l", "clear_input", "clear", show=False),
+        Binding("ctrl+up", "scroll_up", "scroll", show=False),
+        Binding("ctrl+down", "scroll_down", "scroll", show=False),
+        Binding("pageup", "scroll_up", "scroll", show=False),
+        Binding("pagedown", "scroll_down", "scroll", show=False),
+        Binding("ctrl+home", "scroll_top", "top", show=False),
+        Binding("ctrl+end", "scroll_bottom", "bottom", show=False),
     ]
 
     def __init__(self) -> None:
@@ -2096,6 +2108,44 @@ class MybotApp(App):
         self._set_view("chat" if session.records else "home")
         self._refresh_status()
         self._persist()
+
+    def action_show_help(self) -> None:
+        self._note(HELP)
+
+    def action_clear_input(self) -> None:
+        try:
+            focused = self.focused
+            if isinstance(focused, PromptArea):
+                focused.load_text("")
+                return
+        except Exception:
+            pass
+        for selector in ("#prompt", "#home-input"):
+            try:
+                self.query_one(selector, PromptArea).load_text("")
+            except Exception:
+                pass
+
+    def action_scroll_up(self) -> None:
+        try:
+            self.query_one("#chat", VerticalScroll).scroll_up(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_down(self) -> None:
+        try:
+            self.query_one("#chat", VerticalScroll).scroll_down(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_top(self) -> None:
+        try:
+            self.query_one("#chat", VerticalScroll).scroll_home(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_bottom(self) -> None:
+        self._scroll_end()
 
     def action_reset(self) -> None:
         if self.agent is not None:
