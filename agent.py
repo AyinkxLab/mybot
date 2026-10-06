@@ -13,7 +13,7 @@ from config import (
     LLM_MODEL,
     SYSTEM_PROMPT,
 )
-from tools import TOOL_SPECS, execute_tool
+from tools import all_tool_specs, execute_tool
 
 MAX_TOOL_ROUNDS = 12
 
@@ -101,7 +101,7 @@ class Agent:
         request = {
             "model": model,
             "messages": self.messages,
-            "tools": TOOL_SPECS,
+            "tools": all_tool_specs(),
             "tool_choice": "auto",
             "stream": True,
         }

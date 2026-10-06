@@ -48,6 +48,14 @@ from tools import (
     set_approval_handler,
     todo_write,
 )
+from plugin_loader import (
+    commands as plugin_commands,
+    emit as emit_plugin_event,
+    load_errors as plugin_load_errors,
+    load_plugins,
+    loaded as plugins_loaded,
+    run_command as run_plugin_command,
+)
 from triggers import evaluate as evaluate_triggers
 
 
@@ -845,6 +853,8 @@ class MybotApp(App):
         self._register_themes()
         self.theme = "opencode"
         set_approval_handler(self._approve)
+        load_plugins()
+        emit_plugin_event("startup")
         self._restore_sessions()
         sidebar = self.query_one(Sidebar)
         sidebar.set_title(self.title)
@@ -1209,6 +1219,7 @@ class MybotApp(App):
             self.query_one(Sidebar).set_title(self.title)
         self._push_undo()
         self._record({"role": "you", "text": text})
+        emit_plugin_event("user_message", text=text)
         chat = self.query_one("#chat", VerticalScroll)
         chat.mount(MessageView("you", text))
         if text.startswith("!"):
@@ -1278,9 +1289,11 @@ class MybotApp(App):
         menu = self.query_one(f"#{menu_id}", OptionList)
         if text.startswith("/") and "\n" not in text and " " not in text:
             query = text[1:].lower()
-            matches = [
-                (name, desc) for name, desc in COMMAND_LIST if query in name[1:].lower()
+            entries = COMMAND_LIST + [
+                (name, entry.get("description", ""))
+                for name, entry in plugin_commands().items()
             ]
+            matches = [(name, desc) for name, desc in entries if query in name[1:].lower()]
         else:
             matches = []
         if not matches:
@@ -1347,6 +1360,7 @@ class MybotApp(App):
             "/status": "status",
             "/triggers": "triggers",
             "/voice": "voice",
+            "/plugins": "plugins",
             "/tour": "tour",
             "/reset": "reset",
             "/help": "help",
@@ -1361,10 +1375,13 @@ class MybotApp(App):
             "/quit": "quit",
         }
         action = mapping.get(command)
-        if action is None:
-            self._note(f"Unknown command: {command}")
-        else:
+        if action is not None:
             self._run_command(action)
+        elif command in plugin_commands():
+            result = run_plugin_command(command, text)
+            self._note(result or f"{command} done")
+        else:
+            self._note(f"Unknown command: {command}")
 
     def _run_command(self, action: str) -> None:
         if action == "connect":
@@ -1395,6 +1412,17 @@ class MybotApp(App):
             self._voice()
         elif action == "tour":
             self._note(TOUR)
+        elif action == "plugins":
+            names = plugins_loaded()
+            lines = ["**Plugins**", ""]
+            if names:
+                lines += [f"- `{name}`" for name in names]
+            else:
+                lines.append("_none loaded_ — drop .py files in `plugins/`")
+            errors = plugin_load_errors()
+            if errors:
+                lines += ["", "Errors:"] + [f"- {item}" for item in errors]
+            self._note("\n".join(lines))
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
@@ -1560,6 +1588,7 @@ class MybotApp(App):
                 pass
             self._assistant_view = None
         self._record({"role": "mybot", "text": final_text})
+        emit_plugin_event("assistant_message", text=final_text)
         meta = Text()
         meta.append("▪ ", style=ACCENT_SOFT)
         meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
