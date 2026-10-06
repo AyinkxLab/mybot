@@ -509,7 +509,7 @@ class ThinkingView(Static):
         self._refresh_content()
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.12, self._tick)
+        self._timer = self.set_interval(0.2, self._tick)
 
     def on_unmount(self) -> None:
         if self._timer is not None:
@@ -1647,8 +1647,16 @@ class MybotApp(App):
         self._thinking.append(chunk)
         self._scroll_end()
 
+    def _finish_thinking(self) -> None:
+        if self._thinking is not None:
+            elapsed = self._thinking.finish()
+            self._record(
+                {"kind": "thinking", "text": self._thinking._text, "elapsed": elapsed}
+            )
+            self._thinking = None
+
     def _add_tool(self, name: str, args: str) -> None:
-        self._thinking = None
+        self._finish_thinking()
         view = ToolView(name, args, detailed=self.show_details)
         record = {"kind": "tool", "name": name, "args": args, "result": ""}
         self._record(record)
@@ -1681,7 +1689,7 @@ class MybotApp(App):
             self._last_tool_record["result"] = result
 
     def _mount_tool(self, view: ToolView) -> None:
-        self._thinking = None
+        self._finish_thinking()
         record = {"kind": "tool", "name": view.tool_name, "args": view.tool_args, "result": ""}
         self._record(record)
         self._last_tool = view
@@ -1702,12 +1710,7 @@ class MybotApp(App):
 
     def _finish(self) -> None:
         self._stop_spinner()
-        if self._thinking is not None:
-            elapsed = self._thinking.finish()
-            self._record(
-                {"kind": "thinking", "text": self._thinking._text, "elapsed": elapsed}
-            )
-            self._thinking = None
+        self._finish_thinking()
         self.busy = False
         self._refresh_status()
         self._scroll_end()
