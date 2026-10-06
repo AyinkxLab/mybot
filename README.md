@@ -4,6 +4,21 @@ A local, tool-using personal assistant for Windows. It talks to any OpenAI-compa
 LLM (DeepSeek, OpenAI, OpenRouter, Groq, Ollama, ...) and can read/write files, run
 shell commands, control the desktop, manage scheduled tasks, and solve GitHub issues.
 
+## Why mybot
+
+opencode is a coding agent in a terminal. mybot is a general assistant with full-machine
+control, and it goes further:
+
+- **Remembers you** — `remember`/`recall` and sessions that persist across restarts.
+- **Real undo** — `/undo` reverts the files a turn wrote, with reviewable diffs.
+- **Local-first** — auto-falls back to local Ollama if your provider is down, routes simple
+  turns to a cheap model, and blocks past a spend cap (`MAX_SESSION_COST`).
+- **Automates in the background** — triggers that fire on a schedule or when a file changes.
+- **Sees and hears** — attach images for vision models; `/voice` transcribes locally.
+- **Drives your desktop** — screenshot → think → click/type, like a computer-use agent.
+- **opencode-style TUI** — home screen, sidebar with context/cost, thinking blocks, slash menu,
+  command palette, themes.
+
 ## Requirements
 
 - Python 3.10+ (tested on 3.13)
