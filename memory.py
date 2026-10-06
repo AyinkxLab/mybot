@@ -5,6 +5,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 MEMORY_PATH = BASE_DIR / ".mybot_memory.json"
 SESSIONS_PATH = BASE_DIR / ".mybot_sessions.json"
+HISTORY_PATH = BASE_DIR / ".mybot_history.json"
 
 
 def load_notes() -> list:
@@ -44,6 +45,20 @@ def format_notes(limit: int = 12) -> str:
     if not notes:
         return "(nothing remembered yet)"
     return "\n".join(f"- {note.get('text', '')}" for note in notes)
+
+
+def load_history() -> list:
+    if HISTORY_PATH.is_file():
+        try:
+            data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+            return [str(item) for item in data] if isinstance(data, list) else []
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def save_history(history: list) -> None:
+    HISTORY_PATH.write_text(json.dumps(history[-500:]), encoding="utf-8")
 
 
 def save_sessions(sessions: list) -> None:
