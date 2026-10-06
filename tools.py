@@ -834,8 +834,18 @@ _DISPATCH = {
 }
 
 
+def all_tool_specs() -> list:
+    from plugin_loader import tool_specs
+
+    return TOOL_SPECS + tool_specs()
+
+
 def execute_tool(name: str, arguments: str) -> str:
     fn = _DISPATCH.get(name)
+    if fn is None:
+        from plugin_loader import get_tool
+
+        fn = get_tool(name)
     if fn is None:
         return f"ERROR: unknown tool: {name}"
     try:

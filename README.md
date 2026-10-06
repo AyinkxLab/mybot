@@ -130,6 +130,25 @@ vision model can *see* it; it then uses `gui_click` / `gui_type` / `gui_hotkey` 
 Coordinates are read off the screenshot and mapped back to the real screen. Example:
 "open Settings and turn off notifications". Needs `pyautogui`; use with care.
 
+## Plugins
+
+Drop a `.py` file in `plugins/`. It may define `register(api)` to add:
+
+```python
+def register(api):
+    api.register_tool("now", lambda: "2026-01-01",
+                      "Current date", {"type": "object", "properties": {}, "required": []})
+    api.register_command("hello", lambda text: "hi from my plugin", "greet")
+    api.on("startup", lambda: api.log("loaded"))
+    api.on("user_message", lambda text: None)      # also: assistant_message, turn_end
+```
+
+- **Tools** become available to the model automatically.
+- **Commands** show up in the `/` menu and run with `/name args`.
+- **Hooks** fire on events: `startup`, `user_message`, `assistant_message`, `turn_end`.
+- `/plugins` lists what loaded. See `plugins/example.py`. Plugins run with full app
+  privileges — only install ones you trust.
+
 ## Triggers (background automation)
 
 While `mybot` is running, a small daemon checks background triggers every 2s and runs their
