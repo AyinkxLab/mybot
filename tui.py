@@ -90,12 +90,32 @@ COMMANDS = [
     ("compact session", "compact"),
     ("export conversation", "export"),
     ("switch session", "sessions"),
+    ("system status", "status"),
     ("undo last turn", "undo"),
     ("redo last turn", "redo"),
     ("new session", "new"),
     ("clear history", "reset"),
     ("help", "help"),
     ("quit", "quit"),
+]
+
+COMMAND_LIST = [
+    ("/connect", "set provider, key and model"),
+    ("/models", "switch the model"),
+    ("/theme", "change theme"),
+    ("/mode", "switch agent mode (build / plan)"),
+    ("/thinking", "expand/collapse reasoning"),
+    ("/details", "expand/collapse tool output"),
+    ("/compact", "summarize the session"),
+    ("/export", "save the conversation as Markdown"),
+    ("/sessions", "switch between sessions"),
+    ("/status", "show system status"),
+    ("/new", "start a new session"),
+    ("/reset", "clear conversation history"),
+    ("/undo", "remove the last turn"),
+    ("/redo", "restore an undone turn"),
+    ("/help", "show help"),
+    ("/exit", "quit"),
 ]
 
 HELP = """[b]commands[/]
@@ -148,6 +168,7 @@ HOME_PLACEHOLDERS = [
 ]
 NO_MODELS_TIP = "Run {highlight}/connect{/highlight} to add an AI provider and start coding"
 TIPS = [
+    "Type {highlight}/{/highlight} to see available commands",
     "Type {highlight}@{/highlight} followed by a filename to attach files",
     "Start a message with {highlight}!{/highlight} to run shell commands (e.g., {highlight}!ls -la{/highlight})",
     "Use {highlight}/undo{/highlight} to revert the last turn",
@@ -231,6 +252,13 @@ class PromptArea(TextArea):
         )
 
     async def _on_key(self, event) -> None:
+        if getattr(self.app, "_cmdmenu_visible", False) and self.id == getattr(
+            self.app, "_cmdmenu_input_id", None
+        ):
+            if self.app._cmdmenu_handle(event.key):
+                event.prevent_default()
+                event.stop()
+                return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -615,6 +643,7 @@ class MybotApp(App):
     #side-title { text-style: bold; color: $foreground; }
     .meta { color: $text-muted; padding: 0 0 0 3; height: auto; margin: 0 0 1 0; }
     #bottom { dock: bottom; height: auto; }
+    #cmdmenu, #home-cmdmenu { height: auto; max-height: 9; border: none; background: $panel; padding: 0 1; }
     #statusbar { height: 1; background: $panel; padding: 0 1; }
     #status-left { width: 1fr; }
     #status-right { width: auto; text-align: right; }
@@ -699,6 +728,10 @@ class MybotApp(App):
         self._tool_views = []
         self._spinner = None
         self._leader = False
+        self._cmdmenu_visible = False
+        self._cmdmenu_matches = []
+        self._cmdmenu_menu_id = None
+        self._cmdmenu_input_id = None
         self._cancel = threading.Event()
         self.sessions = [Session()]
         self.index = 0
@@ -718,11 +751,13 @@ class MybotApp(App):
         with Vertical(id="home"):
             yield Static(_logo(), id="logo")
             with Vertical(id="home-prompt"):
+                yield OptionList(id="home-cmdmenu")
                 yield PromptArea(placeholder=_placeholder_text(), id="home-input")
                 yield Static("", id="home-agent")
                 yield Static(_hint_text(), id="home-hints")
             yield Static(_tip_text(is_configured()), id="home-tip")
         with Vertical(id="bottom"):
+            yield OptionList(id="cmdmenu")
             yield PromptArea(placeholder="Ask mybot anything...", id="prompt")
             with Horizontal(id="statusbar"):
                 yield Static("", id="status-left")
@@ -753,6 +788,8 @@ class MybotApp(App):
         self._set_view("home")
         self._refresh_home_meta()
         self._rotate_placeholder()
+        self.query_one("#cmdmenu").display = False
+        self.query_one("#home-cmdmenu").display = False
 
     def _rotate_placeholder(self) -> None:
         try:
@@ -1048,6 +1085,71 @@ class MybotApp(App):
             except Exception:
                 pass
             self._spinner = None
+
+    MENU_FOR_INPUT = {"prompt": "cmdmenu", "home-input": "home-cmdmenu"}
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        menu_id = self.MENU_FOR_INPUT.get(event.text_area.id)
+        if menu_id is None:
+            return
+        self._update_cmdmenu(event.text_area.text, event.text_area.id, menu_id)
+
+    def _update_cmdmenu(self, text: str, input_id: str, menu_id: str) -> None:
+        menu = self.query_one(f"#{menu_id}", OptionList)
+        if text.startswith("/") and "\n" not in text and " " not in text:
+            query = text[1:].lower()
+            matches = [
+                (name, desc) for name, desc in COMMAND_LIST if query in name[1:].lower()
+            ]
+        else:
+            matches = []
+        if not matches:
+            self._hide_cmdmenu()
+            return
+        self._cmdmenu_matches = [name for name, _ in matches]
+        menu.clear_options()
+        for name, desc in matches:
+            label = Text()
+            label.append(name, style=TEXT_COLOR)
+            label.append(f"  {desc}", style=MUTED)
+            menu.add_option(Option(label, id=name))
+        menu.highlighted = 0
+        menu.display = True
+        self._cmdmenu_visible = True
+        self._cmdmenu_menu_id = menu_id
+        self._cmdmenu_input_id = input_id
+
+    def _hide_cmdmenu(self) -> None:
+        if self._cmdmenu_visible and self._cmdmenu_menu_id:
+            try:
+                self.query_one(f"#{self._cmdmenu_menu_id}", OptionList).display = False
+            except Exception:
+                pass
+        self._cmdmenu_visible = False
+
+    def _cmdmenu_handle(self, key: str) -> bool:
+        menu = self.query_one(f"#{self._cmdmenu_menu_id}", OptionList)
+        if key == "escape":
+            self._hide_cmdmenu()
+            return True
+        if key in ("up", "down"):
+            count = menu.option_count
+            if count:
+                index = menu.highlighted or 0
+                index = (index + (1 if key == "down" else -1)) % count
+                menu.highlighted = index
+            return True
+        if key in ("enter", "tab"):
+            index = menu.highlighted
+            if index is not None and index < len(self._cmdmenu_matches):
+                name = self._cmdmenu_matches[index]
+                self._cmdmenu_visible = False
+                if self._cmdmenu_input_id:
+                    self.query_one(f"#{self._cmdmenu_input_id}", PromptArea).load_text("")
+                self._hide_cmdmenu()
+                self._command(name)
+            return True
+        return False
 
     def _command(self, text: str) -> None:
         command = text.split()[0].lower()
