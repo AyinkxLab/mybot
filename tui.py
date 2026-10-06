@@ -25,6 +25,7 @@ from auth import (
     save_auth,
 )
 from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
+from memory import load_sessions, save_sessions
 from tools import (
     TOOL_SPECS,
     get_todos,
@@ -773,23 +774,82 @@ class MybotApp(App):
         self._register_themes()
         self.theme = "opencode"
         set_approval_handler(self._approve)
-        if is_configured():
-            try:
-                self.agent = Agent(system_prompt=self._system_prompt())
-            except Exception as exc:
-                self._note(f"error: {exc}")
-        self.sessions[0].agent = self.agent
+        if not self._restore_sessions():
+            if is_configured():
+                try:
+                    self.agent = Agent(system_prompt=self._system_prompt())
+                except Exception as exc:
+                    self._note(f"error: {exc}")
+            self.sessions[0].agent = self.agent
         sidebar = self.query_one(Sidebar)
         sidebar.set_title(self.title)
         sidebar.set_tools(len(TOOL_SPECS))
         sidebar.set_lsp("LSPs are disabled")
         sidebar.set_todos(get_todos())
         self._refresh_status()
-        self._set_view("home")
+        self._rebuild_chat()
+        self._set_view("chat" if self._session().records else "home")
         self._refresh_home_meta()
         self._rotate_placeholder()
         self.query_one("#cmdmenu").display = False
         self.query_one("#home-cmdmenu").display = False
+
+    def _restore_sessions(self) -> bool:
+        stored = load_sessions()
+        if not stored:
+            return False
+        sessions = []
+        for data in stored:
+            agent = None
+            if is_configured():
+                try:
+                    agent = Agent(system_prompt=self._system_prompt())
+                    if isinstance(data.get("messages"), list):
+                        agent.messages = data["messages"]
+                except Exception:
+                    agent = None
+            session = Session(agent, data.get("title", "session"))
+            session.records = data.get("records", [])
+            session.tokens_in = data.get("tokens_in", 0)
+            session.tokens_out = data.get("tokens_out", 0)
+            session.context_tokens = data.get("context_tokens", 0)
+            sessions.append(session)
+        self.sessions = sessions
+        self.index = 0
+        self._load_current_session()
+        return True
+
+    def _load_current_session(self) -> None:
+        session = self._session()
+        self.agent = session.agent
+        self.title = session.title
+        self.tokens_in = session.tokens_in
+        self.tokens_out = session.tokens_out
+        self.context_tokens = session.context_tokens
+
+    def _serialize_sessions(self) -> list:
+        out = []
+        for session in self.sessions:
+            out.append(
+                {
+                    "title": session.title,
+                    "records": session.records,
+                    "tokens_in": session.tokens_in,
+                    "tokens_out": session.tokens_out,
+                    "context_tokens": session.context_tokens,
+                    "messages": session.agent.messages if session.agent else None,
+                }
+            )
+        return out
+
+    def _persist(self) -> None:
+        try:
+            save_sessions(self._serialize_sessions())
+        except Exception:
+            pass
+
+    def on_unmount(self) -> None:
+        self._persist()
 
     def _rotate_placeholder(self) -> None:
         try:
@@ -1416,6 +1476,7 @@ class MybotApp(App):
         self._refresh_status()
         self._scroll_end()
         self.query_one("#prompt", PromptArea).focus()
+        self._persist()
 
     def _approve(self, action: str) -> bool:
         event = threading.Event()
@@ -1536,6 +1597,7 @@ class MybotApp(App):
         self._rebuild_chat()
         self._refresh_status()
         self._note("Undid last turn.")
+        self._persist()
 
     def action_redo(self) -> None:
         if self.busy:
@@ -1551,6 +1613,7 @@ class MybotApp(App):
         self._rebuild_chat()
         self._refresh_status()
         self._note("Redid last turn.")
+        self._persist()
 
     def _rebuild_chat(self) -> None:
         chat = self.query_one("#chat", VerticalScroll)
@@ -1604,6 +1667,7 @@ class MybotApp(App):
         self._rebuild_chat()
         self._set_view("chat" if session.records else "home")
         self._refresh_status()
+        self._persist()
 
     def action_reset(self) -> None:
         if self.agent is not None:

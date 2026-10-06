@@ -331,6 +331,21 @@ def todo_write(todos: list = None) -> str:
     return _render_todos()
 
 
+def remember(text: str) -> str:
+    from memory import add_note
+
+    return add_note(text)
+
+
+def recall(query: str = "") -> str:
+    from memory import format_notes, search_notes
+
+    notes = search_notes(query)
+    if not notes:
+        return "No matching memories." if query else format_notes()
+    return "\n".join(f"- {note.get('text', '')}" for note in notes[-50:])
+
+
 TOOL_SPECS = [
     {
         "type": "function",
@@ -562,6 +577,33 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": (
+                "Save a durable fact about the user or project to long-term memory. "
+                "The most recent memories are automatically included in your context."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Look up saved memories, optionally filtered by a query.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -580,6 +622,8 @@ _DISPATCH = {
     "list_tasks": list_tasks,
     "delete_task": delete_task,
     "todo_write": todo_write,
+    "remember": remember,
+    "recall": recall,
 }
 
 
