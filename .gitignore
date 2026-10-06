@@ -18,3 +18,6 @@ workspace/*
 Thumbs.db
 .vscode/
 .idea/
+
+# Separate repo accidentally placed in the project
+aica/

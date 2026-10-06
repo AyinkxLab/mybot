@@ -10,7 +10,14 @@ AUTH_PATH = BASE_DIR / ".mybot_config.json"
 PROVIDERS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
-        "models": ["deepseek-flash", "deepseek-v4-pro"],
+        "models": [
+            "deepseek-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -29,6 +36,25 @@ PROVIDERS = {
         "models": ["llama3.1", "qwen2.5"],
     },
 }
+
+
+MODEL_LABELS = {
+    "deepseek-flash": "DeepSeek V4.1 Flash",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "deepseek-v4-flash": "DeepSeek V4 Flash (legacy)",
+    "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision (legacy)",
+    "deepseek-chat": "DeepSeek Chat",
+    "deepseek-reasoner": "DeepSeek Reasoner",
+    "gpt-4o-mini": "GPT-4o mini",
+    "gpt-4o": "GPT-4o",
+    "gpt-4.1": "GPT-4.1",
+    "gpt-4.1-mini": "GPT-4.1 mini",
+    "llama-3.3-70b-versatile": "Llama 3.3 70B",
+}
+
+
+def model_label(model: str) -> str:
+    return MODEL_LABELS.get(model, model)
 
 
 def load_auth() -> dict:
