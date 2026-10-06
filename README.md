@@ -58,8 +58,9 @@ Commands: `/connect`, `/models`, `/theme` (`/themes`), `/mode`, `/thinking`, `/d
 `/compact` (`/summarize`), `/export`, `/sessions` (`/resume`, `/continue`), `/undo`, `/redo`,
 `/new` (`/clear`), `/reset`, `/exit` (`/help` in the TUI).
 
-Sessions are kept in memory; `/sessions` switches between them and `/undo` / `/redo` move the
-last turn. (Undo/redo affect the conversation only — they don't revert files, unlike opencode.)
+Sessions persist to disk and survive restarts; `/sessions` switches between them. `/undo`
+removes the last turn **and reverts files it wrote**; `/redo` restores both. Overwriting an
+existing file shows a diff and asks for approval when `REQUIRE_APPROVAL=true`.
 
 Prefixes: `!command` runs a shell command; `@path` attaches a file's contents to your message.
 
