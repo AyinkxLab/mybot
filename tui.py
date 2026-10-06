@@ -845,14 +845,7 @@ class MybotApp(App):
         self._register_themes()
         self.theme = "opencode"
         set_approval_handler(self._approve)
-        restored = self._restore_sessions()
-        if not restored:
-            if is_configured():
-                try:
-                    self.agent = Agent(system_prompt=self._system_prompt())
-                except Exception as exc:
-                    self._note(f"error: {exc}")
-            self.sessions[0].agent = self.agent
+        self._restore_sessions()
         sidebar = self.query_one(Sidebar)
         sidebar.set_title(self.title)
         sidebar.set_tools(len(TOOL_SPECS))
@@ -860,8 +853,6 @@ class MybotApp(App):
         sidebar.set_todos(get_todos())
         self._refresh_status()
         self._rebuild_chat()
-        if not restored:
-            self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", TOUR))
         self._set_view("chat" if self._session().records else "home")
         self._refresh_home_meta()
         self._rotate_placeholder()
@@ -885,12 +876,18 @@ class MybotApp(App):
             f"▶ trigger {trigger.get('id')}: {trigger.get('command', '')}\n{result[:300]}",
         )
 
-    def _restore_sessions(self) -> bool:
-        stored = load_sessions()
-        if not stored:
-            return False
+    def _new_session(self) -> "Session":
+        agent = None
+        if is_configured():
+            try:
+                agent = Agent(system_prompt=self._system_prompt())
+            except Exception:
+                agent = None
+        return Session(agent)
+
+    def _restore_sessions(self) -> None:
         sessions = []
-        for data in stored:
+        for data in load_sessions():
             agent = None
             if is_configured():
                 try:
@@ -905,10 +902,12 @@ class MybotApp(App):
             session.tokens_out = data.get("tokens_out", 0)
             session.context_tokens = data.get("context_tokens", 0)
             sessions.append(session)
+        # Always start fresh; previous sessions stay available via /sessions.
+        if not sessions or sessions[-1].records:
+            sessions.append(self._new_session())
         self.sessions = sessions
-        self.index = 0
+        self.index = len(sessions) - 1
         self._load_current_session()
-        return True
 
     def _load_current_session(self) -> None:
         session = self._session()
