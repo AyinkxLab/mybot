@@ -107,6 +107,7 @@ COMMANDS = [
     ("export conversation", "export"),
     ("switch session", "sessions"),
     ("system status", "status"),
+    ("show the tour", "tour"),
     ("undo last turn", "undo"),
     ("redo last turn", "redo"),
     ("new session", "new"),
@@ -128,6 +129,7 @@ COMMAND_LIST = [
     ("/status", "show system status"),
     ("/triggers", "manage background triggers"),
     ("/voice", "record and transcribe (optional)"),
+    ("/tour", "what mybot can do"),
     ("/new", "start a new session"),
     ("/reset", "clear conversation history"),
     ("/undo", "remove the last turn"),
@@ -154,6 +156,7 @@ HELP = """[b]commands[/]
   /new         new session (alias /clear)
   /reset       clear conversation history
   /help        show this
+  /tour        show what mybot can do
   /exit        quit
 
 [b]prefixes[/]
@@ -168,6 +171,24 @@ HELP = """[b]commands[/]
   ctrl+n  new session    esc     cancel run          ctrl+c  quit
 
 The model plans multi-step work with a todo list shown in the sidebar."""
+
+TOUR = """## Welcome to mybot
+
+Here's what it can do:
+
+- **Talk** — any model: `/connect`, `/models` (DeepSeek, OpenAI, local Ollama…)
+- **Remember** — stores facts and sessions survive restarts: `/sessions`
+- **Undo** — `/undo` reverts the last turn *and the files it wrote*, `/redo` restores
+- **Offline** — falls back to local Ollama when your provider is down
+- **Budget** — `MAX_SESSION_COST` blocks spending past a cap
+- **Automate** — background triggers on a schedule or when a file changes: `/triggers`
+- **See** — attach an image (`@diagram.png`, or drag one in) for vision models
+- **Hear** — `/voice` records and transcribes locally
+- **Act** — drive your PC: screenshot → think → click/type
+- **Explore** — type `/` for the command list, `ctrl+p` for the palette, `tab` for modes
+
+Try: *"Summarize this project and suggest one improvement."*
+Type `/help` for all commands anytime."""
 
 BANNER = [
     "███╗   ███╗██╗   ██╗██████╗  ██████╗ ████████╗",
@@ -189,6 +210,7 @@ HOME_PLACEHOLDERS = [
 ]
 NO_MODELS_TIP = "Run {highlight}/connect{/highlight} to add an AI provider and start coding"
 TIPS = [
+    "Run {highlight}/tour{/highlight} to see everything mybot can do",
     "Type {highlight}/{/highlight} to see available commands",
     "Type {highlight}@{/highlight} followed by a filename to attach files",
     "Start a message with {highlight}!{/highlight} to run shell commands (e.g., {highlight}!ls -la{/highlight})",
@@ -815,7 +837,8 @@ class MybotApp(App):
         self._register_themes()
         self.theme = "opencode"
         set_approval_handler(self._approve)
-        if not self._restore_sessions():
+        restored = self._restore_sessions()
+        if not restored:
             if is_configured():
                 try:
                     self.agent = Agent(system_prompt=self._system_prompt())
@@ -829,6 +852,8 @@ class MybotApp(App):
         sidebar.set_todos(get_todos())
         self._refresh_status()
         self._rebuild_chat()
+        if not restored:
+            self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", TOUR))
         self._set_view("chat" if self._session().records else "home")
         self._refresh_home_meta()
         self._rotate_placeholder()
@@ -1310,6 +1335,7 @@ class MybotApp(App):
             "/status": "status",
             "/triggers": "triggers",
             "/voice": "voice",
+            "/tour": "tour",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
@@ -1355,6 +1381,8 @@ class MybotApp(App):
             self._note("**Background triggers**\n\n" + list_triggers())
         elif action == "voice":
             self._voice()
+        elif action == "tour":
+            self._note(TOUR)
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
