@@ -111,8 +111,13 @@ class Agent:
         except Exception:
             return client.chat.completions.create(**request)
 
-    def respond_stream(self, user_text: str, model: str = None):
-        self.messages.append({"role": "user", "content": user_text})
+    def respond_stream(self, user_text: str, model: str = None, images: list = None):
+        content = user_text
+        if images:
+            content = [{"type": "text", "text": user_text}]
+            for image in images:
+                content.append({"type": "image_url", "image_url": {"url": image}})
+        self.messages.append({"role": "user", "content": content})
         active_client = self.client
         active_model = model or self.model
         fallback_used = False
