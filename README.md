@@ -91,6 +91,9 @@ See `.env.example` for the full list. Highlights:
 | `ALLOW_SHELL` | Set `false` to disable shell execution entirely. |
 | `GITHUB_TOKEN` | Fine-grained PAT (Contents + Issues + Pull requests) for issue solving. |
 | `ALLOW_PRIVATE_HTTP` | Allow `http_get` to reach localhost/private IPs (SSRF risk). |
+| `LLM_FALLBACK_*` | Local-first fallback (defaults to Ollama) used if the primary provider fails. |
+| `LLM_MODEL_FAST` | Optional cheap model for short/simple turns. |
+| `MAX_SESSION_COST` | Session spending cap in USD (0 = off); turns are blocked past it. |
 | `TELEGRAM_ALLOWED_IDS` / `DISCORD_ALLOWED_IDS` | User IDs allowed to use the chat adapters. |
 
 ### Full-machine access

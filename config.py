@@ -27,6 +27,20 @@ LLM_API_KEY = _auth.get("api_key") or LLM_API_KEY
 LLM_BASE_URL = _auth.get("base_url") or LLM_BASE_URL
 LLM_MODEL = _auth.get("model") or LLM_MODEL
 
+# Local-first fallback (used when the primary provider fails).
+LLM_FALLBACK_BASE_URL = os.getenv("LLM_FALLBACK_BASE_URL", "http://localhost:11434/v1")
+LLM_FALLBACK_API_KEY = os.getenv("LLM_FALLBACK_API_KEY", "ollama")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "")
+
+# Optional cheap model for short/simple turns (per-task routing).
+LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", "")
+
+# Session spending cap in USD (0 disables).
+try:
+    MAX_SESSION_COST = float(os.getenv("MAX_SESSION_COST", "0") or 0)
+except ValueError:
+    MAX_SESSION_COST = 0.0
+
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").strip().lower() not in {"0", "false", "no", "off"}

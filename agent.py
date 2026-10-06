@@ -1,7 +1,17 @@
+from itertools import chain
+
 from openai import OpenAI
 
-from auth import load_auth
-from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, SYSTEM_PROMPT
+from auth import list_models, load_auth
+from config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_FALLBACK_API_KEY,
+    LLM_FALLBACK_BASE_URL,
+    LLM_FALLBACK_MODEL,
+    LLM_MODEL,
+    SYSTEM_PROMPT,
+)
 from tools import TOOL_SPECS, execute_tool
 
 MAX_TOOL_ROUNDS = 12
@@ -16,6 +26,9 @@ class Agent:
         if not api_key:
             raise RuntimeError("No API key set. Run /connect to add your provider key.")
         self.client = OpenAI(api_key=api_key, base_url=self.base_url)
+        self.fallback_client = None
+        self.fallback_model = LLM_FALLBACK_MODEL or None
+        self._fallback_checked = False
         self.history_limit = history_limit
         try:
             from memory import format_notes
@@ -65,26 +78,68 @@ class Agent:
                 final = event["text"]
         return final
 
-    def respond_stream(self, user_text: str):
+    def _fallback(self):
+        if self.fallback_client is not None or self._fallback_checked:
+            return self.fallback_client, self.fallback_model
+        self._fallback_checked = True
+        try:
+            model = self.fallback_model
+            if not model:
+                models = list_models(LLM_FALLBACK_BASE_URL, LLM_FALLBACK_API_KEY)
+                model = models[0] if models else None
+            if model:
+                self.fallback_client = OpenAI(
+                    api_key=LLM_FALLBACK_API_KEY, base_url=LLM_FALLBACK_BASE_URL
+                )
+                self.fallback_model = model
+        except Exception:
+            pass
+        return self.fallback_client, self.fallback_model
+
+    def _open_stream(self, client, model):
+        request = {
+            "model": model,
+            "messages": self.messages,
+            "tools": TOOL_SPECS,
+            "tool_choice": "auto",
+            "stream": True,
+        }
+        try:
+            return client.chat.completions.create(
+                **request, stream_options={"include_usage": True}
+            )
+        except Exception:
+            return client.chat.completions.create(**request)
+
+    def respond_stream(self, user_text: str, model: str = None):
         self.messages.append({"role": "user", "content": user_text})
+        active_client = self.client
+        active_model = model or self.model
+        fallback_used = False
 
         for _ in range(MAX_TOOL_ROUNDS):
             content_parts = []
             tool_calls = {}
-            request = {
-                "model": self.model,
-                "messages": self.messages,
-                "tools": TOOL_SPECS,
-                "tool_choice": "auto",
-                "stream": True,
-            }
             try:
-                stream = self.client.chat.completions.create(
-                    **request, stream_options={"include_usage": True}
-                )
-            except Exception:
-                stream = self.client.chat.completions.create(**request)
-            for chunk in stream:
+                iterator = iter(self._open_stream(active_client, active_model))
+                head = [next(iterator)]
+            except StopIteration:
+                head = []
+                iterator = iter(())
+            except Exception as exc:
+                fb_client, fb_model = self._fallback()
+                if fb_client is not None and not fallback_used:
+                    fallback_used = True
+                    active_client, active_model = fb_client, fb_model
+                    yield {
+                        "type": "notice",
+                        "text": f"primary model failed ({type(exc).__name__}); using local {active_model}",
+                    }
+                    iterator = iter(self._open_stream(active_client, active_model))
+                    head = [next(iterator)]
+                else:
+                    raise
+            for chunk in chain(head, iterator):
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:
                     yield {
