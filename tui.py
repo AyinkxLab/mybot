@@ -37,6 +37,7 @@ from tools import (
     begin_snapshot,
     end_snapshot,
     get_todos,
+    list_triggers,
     read_file,
     read_snapshot_files,
     restore_snapshot,
@@ -44,6 +45,7 @@ from tools import (
     set_approval_handler,
     todo_write,
 )
+from triggers import evaluate as evaluate_triggers
 
 
 def _short(text: str, limit: int = 120) -> str:
@@ -121,6 +123,7 @@ COMMAND_LIST = [
     ("/export", "save the conversation as Markdown"),
     ("/sessions", "switch between sessions"),
     ("/status", "show system status"),
+    ("/triggers", "manage background triggers"),
     ("/new", "start a new session"),
     ("/reset", "clear conversation history"),
     ("/undo", "remove the last turn"),
@@ -140,6 +143,7 @@ HELP = """[b]commands[/]
   /export      write the conversation to a Markdown file
   /sessions    switch between sessions (aliases /resume /continue)
   /status      show system status
+  /triggers    list background triggers
   /undo        remove the last turn (alias ctrl+x u)
   /redo        restore an undone turn (alias ctrl+x r)
   /new         new session (alias /clear)
@@ -812,6 +816,23 @@ class MybotApp(App):
         self._rotate_placeholder()
         self.query_one("#cmdmenu").display = False
         self.query_one("#home-cmdmenu").display = False
+        self.set_interval(2.0, self._check_triggers)
+
+    def _check_triggers(self) -> None:
+        try:
+            fired = evaluate_triggers()
+        except Exception:
+            return
+        for trigger in fired:
+            self._run_trigger(trigger)
+
+    @work(thread=True)
+    def _run_trigger(self, trigger: dict) -> None:
+        result = run_shell(trigger.get("command", ""))
+        self.call_from_thread(
+            self._note,
+            f"▶ trigger {trigger.get('id')}: {trigger.get('command', '')}\n{result[:300]}",
+        )
 
     def _restore_sessions(self) -> bool:
         stored = load_sessions()
@@ -1254,6 +1275,7 @@ class MybotApp(App):
             "/summarize": "compact",
             "/export": "export",
             "/status": "status",
+            "/triggers": "triggers",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
@@ -1295,6 +1317,8 @@ class MybotApp(App):
             self._export()
         elif action == "status":
             self._status()
+        elif action == "triggers":
+            self._note("**Background triggers**\n\n" + list_triggers())
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":

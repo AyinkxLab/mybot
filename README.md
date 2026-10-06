@@ -105,7 +105,22 @@ This is a powerful and risky configuration and is entirely at your own discretio
 
 `read_file`, `write_file`, `list_dir`, `run_shell`, `http_get`, `github_request`,
 `launch_app`, `gui_click`, `gui_type`, `gui_hotkey`, `gui_screenshot`,
-`schedule_task`, `list_tasks`, `delete_task`.
+`schedule_task`, `list_tasks`, `delete_task`, `todo_write`, `remember`, `recall`,
+`add_trigger`, `list_triggers`, `remove_trigger`.
+
+## Triggers (background automation)
+
+While `mybot` is running, a small daemon checks background triggers every 2s and runs their
+command when they fire:
+
+```
+when ./src changes  -> run tests       (watch)
+every 300 seconds   -> check the queue  (interval)
+```
+
+The model can create them with `add_trigger`; list them with `/triggers`. For automation when
+`mybot` is *not* running, use `schedule_task` (Windows Task Scheduler) or a `.cmd` that runs
+`mybot`.
 
 ## Chat adapters
 
