@@ -673,7 +673,7 @@ class ApprovalScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="approval"):
             yield Static("approval needed", id="approval-title")
-            yield Static(self.action, id="approval-body")
+            yield Static(Text(self.action), id="approval-body")
             with Horizontal(id="approval-buttons"):
                 yield Button("Deny", variant="error", id="deny")
                 yield Button("Allow", variant="success", id="allow")
