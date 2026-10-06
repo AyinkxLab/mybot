@@ -8,9 +8,10 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Input, Markdown, OptionList, Select, Static
+from textual.widgets import Button, Input, Markdown, OptionList, Select, Static, TextArea
 from textual.widgets.option_list import Option
 
 from agent import Agent
@@ -117,6 +118,7 @@ HELP = """[b]commands[/]
   @file        attach file contents to your message
 
 [b]keys[/]
+  enter   send           ctrl+j  newline in the prompt
   tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
   ctrl+x  leader (n l u r t m c x q)                 ctrl+t  theme
   ctrl+n  new session    esc     cancel run          ctrl+c  quit
@@ -205,6 +207,38 @@ def _tip_text(connected: bool = True) -> Text:
     for part, highlight in _parse_tip(tip):
         text.append(part, style=TEXT_COLOR if highlight else MUTED)
     return text
+
+
+class PromptArea(TextArea):
+    class Submitted(Message):
+        def __init__(self, area: "PromptArea", value: str) -> None:
+            super().__init__()
+            self.area = area
+            self.value = value
+
+    def __init__(self, placeholder: str = "", id: str | None = None) -> None:
+        super().__init__(
+            theme="css",
+            soft_wrap=True,
+            compact=True,
+            placeholder=placeholder,
+            show_line_numbers=False,
+            highlight_cursor_line=False,
+            id=id,
+        )
+
+    async def _on_key(self, event) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(self, self.text))
+            return
+        if event.key in ("ctrl+j", "shift+enter"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
 
 
 class Session:
@@ -561,8 +595,8 @@ class MybotApp(App):
     MarkdownTableContent > .markdown-table--header { color: #fab283; text-style: bold; }
     .tool { padding: 0 0 0 3; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 3; height: auto; }
-    #prompt { border: tall $surface; background: $panel; }
-    #prompt:focus { border: tall $primary; }
+    #prompt { height: auto; max-height: 10; border: none; background: $panel; padding: 0 1; }
+    #prompt:focus { border: none; }
     ApprovalScreen { align: center middle; }
     #approval { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
     #approval-title { text-style: bold; color: $warning; }
@@ -577,9 +611,9 @@ class MybotApp(App):
     #home { height: 1fr; align: center middle; }
     #logo { width: 75; text-align: center; height: auto; }
     #home-prompt { width: 75; height: auto; border-left: thick $secondary; background: $panel; padding: 1 2; }
-    #home-input { width: 100%; border: none; background: $panel; color: $foreground; }
+    #home-input { width: 100%; height: auto; max-height: 10; border: none; background: $panel; color: $foreground; }
     #home-input:focus { border: none; }
-    #home-input .input--placeholder, #prompt .input--placeholder { color: $text-muted; }
+    #home-input .text-area--placeholder, #prompt .text-area--placeholder { color: $text-muted; }
     #home-agent { width: 100%; height: 1; margin: 1 0 0 0; }
     #home-hints { width: 100%; height: 1; color: $text-muted; }
     #home-tip { width: 75; text-align: center; color: $text-muted; margin: 3 0 0 0; height: auto; }
@@ -641,12 +675,12 @@ class MybotApp(App):
         with Vertical(id="home"):
             yield Static(_logo(), id="logo")
             with Vertical(id="home-prompt"):
-                yield Input(placeholder=_placeholder_text(), id="home-input")
+                yield PromptArea(placeholder=_placeholder_text(), id="home-input")
                 yield Static("", id="home-agent")
                 yield Static(_hint_text(), id="home-hints")
             yield Static(_tip_text(is_configured()), id="home-tip")
         with Vertical(id="bottom"):
-            yield Input(placeholder="Ask mybot anything...", id="prompt")
+            yield PromptArea(placeholder="Ask mybot anything...", id="prompt")
             with Horizontal(id="statusbar"):
                 yield Static("", id="status-left")
                 yield Static("", id="status-right")
@@ -676,7 +710,7 @@ class MybotApp(App):
 
     def _rotate_placeholder(self) -> None:
         try:
-            self.query_one("#home-input", Input).placeholder = _placeholder_text()
+            self.query_one("#home-input", PromptArea).placeholder = _placeholder_text()
         except Exception:
             pass
 
@@ -869,9 +903,9 @@ class MybotApp(App):
         self.query_one("#home").display = not chat
         self.query_one("#home-footer").display = not chat
         if chat:
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", PromptArea).focus()
         else:
-            self.query_one("#home-input", Input).focus()
+            self.query_one("#home-input", PromptArea).focus()
 
     def _refresh_home_meta(self) -> None:
         meta = Text()
@@ -903,9 +937,9 @@ class MybotApp(App):
         self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", text))
         self._scroll_end()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         text = event.value.strip()
-        event.input.value = ""
+        event.area.load_text("")
         if not text or self.busy:
             return
         self._rotate_placeholder()
@@ -1218,7 +1252,7 @@ class MybotApp(App):
         self.busy = False
         self._refresh_status()
         self._scroll_end()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptArea).focus()
 
     def _approve(self, action: str) -> bool:
         event = threading.Event()
