@@ -36,7 +36,7 @@ from config import (
     SYSTEM_PROMPT,
     WORKSPACE,
 )
-from memory import load_sessions, save_sessions
+from memory import load_history, load_sessions, save_history, save_sessions
 from tools import (
     TOOL_SPECS,
     begin_snapshot,
@@ -186,6 +186,7 @@ HELP = """[b]commands[/]
 
 [b]keys[/]
   enter   send           ctrl+j  newline in the prompt
+  up/down recall previous prompts
   tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
   ctrl+x  leader (n l u r t m c x q)                 ctrl+t  theme
   ctrl+n  new session    esc     cancel run          ctrl+c  quit
@@ -331,6 +332,11 @@ class PromptArea(TextArea):
             self.app, "_cmdmenu_input_id", None
         ):
             if self.app._cmdmenu_handle(event.key):
+                event.prevent_default()
+                event.stop()
+                return
+        if event.key in ("up", "down") and "\n" not in self.text:
+            if self.app._history_move(self, event.key):
                 event.prevent_default()
                 event.stop()
                 return
@@ -852,6 +858,8 @@ class MybotApp(App):
         self._cmdmenu_menu_id = None
         self._cmdmenu_input_id = None
         self._cancel = threading.Event()
+        self._history = load_history()
+        self._hist_index = len(self._history)
         self.sessions = [Session()]
         self.index = 0
         self._undo_stack = []
@@ -1244,6 +1252,10 @@ class MybotApp(App):
         event.area.load_text("")
         if not text or self.busy:
             return
+        if not self._history or self._history[-1] != text:
+            self._history.append(text)
+            save_history(self._history)
+        self._hist_index = len(self._history)
         self._rotate_placeholder()
         if text.startswith("/"):
             self._command(text)
@@ -1284,6 +1296,25 @@ class MybotApp(App):
             model_override = LLM_MODEL_FAST
         enriched, images = self._expand_refs(text)
         self._run_agent(enriched, model_override, images)
+
+    def _history_move(self, area, key: str) -> bool:
+        if not self._history:
+            return False
+        if key == "up":
+            if self._hist_index <= 0:
+                return True
+            self._hist_index -= 1
+        else:
+            if self._hist_index >= len(self._history):
+                return True
+            self._hist_index += 1
+        text = (
+            self._history[self._hist_index]
+            if self._hist_index < len(self._history)
+            else ""
+        )
+        area.load_text(text)
+        return True
 
     def _expand_refs(self, text: str):
         blocks = []
