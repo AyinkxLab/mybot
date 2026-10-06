@@ -146,8 +146,35 @@ def register(api):
 - **Tools** become available to the model automatically.
 - **Commands** show up in the `/` menu and run with `/name args`.
 - **Hooks** fire on events: `startup`, `user_message`, `assistant_message`, `turn_end`.
-- `/plugins` lists what loaded. See `plugins/example.py`. Plugins run with full app
-  privileges — only install ones you trust.
+- `/plugins` lists installed and available plugins. See `plugins/example.py`.
+
+### Installing plugins
+
+A small **registry** ships with a few ready plugins (`web-search`, `clipboard`, `weather`,
+`generators`). Install **by name**, from a local file, or from a raw `.py` URL.
+
+In the TUI:
+```
+/plugins                      # installed + available
+/install web-search           # by name
+/install https://raw.githubusercontent.com/<user>/<repo>/main/myplugin.py
+/enable <name>  /disable <name>
+```
+
+From a terminal (the `mybot-plugin` launcher is on your PATH):
+```
+mybot-plugin available
+mybot-plugin search weather
+mybot-plugin install web-search
+mybot-plugin install .\myplugin.py
+mybot-plugin list
+```
+
+The installer refuses files without a top-level `register(api)`, downloads/copies them into
+`plugins/`, and activates them immediately. Add your own registry entries to
+`plugin_registry.json`, or point `MYBOT_PLUGIN_REGISTRY_URL` at a remote JSON registry.
+
+Plugins run with **full app privileges** — only install ones you trust.
 
 ## Triggers (background automation)
 

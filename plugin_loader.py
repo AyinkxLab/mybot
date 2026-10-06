@@ -91,6 +91,16 @@ def load_errors() -> list:
     return list(_log)
 
 
+def reload() -> list:
+    _tool_specs.clear()
+    _tools.clear()
+    _commands.clear()
+    _hooks.clear()
+    _log.clear()
+    _loaded.clear()
+    return load_plugins()
+
+
 def load_plugins() -> list:
     for directory in PLUGIN_DIRS:
         if not directory.is_dir():

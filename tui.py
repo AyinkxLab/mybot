@@ -48,12 +48,14 @@ from tools import (
     set_approval_handler,
     todo_write,
 )
+import plugin_manager as plugin_mgr
 from plugin_loader import (
     commands as plugin_commands,
     emit as emit_plugin_event,
     load_errors as plugin_load_errors,
     load_plugins,
     loaded as plugins_loaded,
+    reload as reload_plugins,
     run_command as run_plugin_command,
 )
 from triggers import evaluate as evaluate_triggers
@@ -137,6 +139,10 @@ COMMAND_LIST = [
     ("/status", "show system status"),
     ("/triggers", "manage background triggers"),
     ("/voice", "record and transcribe (optional)"),
+    ("/install", "install a plugin (name, path, or URL)"),
+    ("/plugins", "list installed + available plugins"),
+    ("/enable", "enable a disabled plugin"),
+    ("/disable", "disable a plugin"),
     ("/tour", "what mybot can do"),
     ("/new", "start a new session"),
     ("/reset", "clear conversation history"),
@@ -164,6 +170,8 @@ HELP = """[b]commands[/]
   /new         new session (alias /clear)
   /reset       clear conversation history
   /help        show this
+  /install     install a plugin (name, path, or URL)
+  /plugins     list installed + available plugins
   /tour        show what mybot can do
   /exit        quit
 
@@ -1346,6 +1354,16 @@ class MybotApp(App):
 
     def _command(self, text: str) -> None:
         command = text.split()[0].lower()
+        args = text.split(" ", 1)[1].strip() if " " in text else ""
+        if command == "/install":
+            self._install_plugin(args)
+            return
+        if command == "/plugins":
+            self._plugins_command(args)
+            return
+        if command in ("/enable", "/disable"):
+            self._toggle_plugin(command, args)
+            return
         mapping = {
             "/connect": "connect",
             "/models": "models",
@@ -1412,17 +1430,6 @@ class MybotApp(App):
             self._voice()
         elif action == "tour":
             self._note(TOUR)
-        elif action == "plugins":
-            names = plugins_loaded()
-            lines = ["**Plugins**", ""]
-            if names:
-                lines += [f"- `{name}`" for name in names]
-            else:
-                lines.append("_none loaded_ — drop .py files in `plugins/`")
-            errors = plugin_load_errors()
-            if errors:
-                lines += ["", "Errors:"] + [f"- {item}" for item in errors]
-            self._note("\n".join(lines))
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
@@ -1790,6 +1797,44 @@ class MybotApp(App):
             area.focus()
         except Exception:
             pass
+
+    def _install_plugin(self, source: str) -> None:
+        if not source:
+            self._note("Usage: `/install <name|path|url>`  (see `/plugins`)")
+            return
+        result = plugin_mgr.install(source)
+        if not result.startswith("ERROR"):
+            reload_plugins()
+        self._note(result)
+
+    def _toggle_plugin(self, command: str, name: str) -> None:
+        if not name:
+            self._note(f"Usage: `{command} <name>`")
+            return
+        result = plugin_mgr.enable(name) if command == "/enable" else plugin_mgr.disable(name)
+        if not result.startswith("ERROR"):
+            reload_plugins()
+        self._note(result)
+
+    def _plugins_command(self, query: str = "") -> None:
+        enabled, disabled = plugin_mgr.installed()
+        lines = ["**Plugins**", ""]
+        lines.append("enabled: " + (", ".join(f"`{n}`" for n in enabled) or "none"))
+        if disabled:
+            lines.append("disabled: " + ", ".join(f"`{n}`" for n in disabled))
+        available = plugin_mgr.search(query)
+        header = "**Available**" + (f" matching '{query}'" if query else "")
+        lines += ["", header]
+        if available:
+            for entry in available:
+                lines.append(f"- `{entry.get('name')}` — {entry.get('description', '')}")
+        else:
+            lines.append("_none_")
+        errors = plugin_load_errors()
+        if errors:
+            lines += ["", "Load errors:"] + [f"- {item}" for item in errors]
+        lines += ["", "Install: `/install <name|path|url>`  ·  toggle: `/enable` `/disable`"]
+        self._note("\n".join(lines))
 
     def action_leader(self) -> None:
         self._leader = True

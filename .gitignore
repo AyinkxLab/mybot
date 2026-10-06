@@ -4,6 +4,7 @@
 .mybot_memory.json
 .mybot_sessions.json
 .mybot_triggers.json
+plugins/.disabled/
 
 # Python
 __pycache__/
