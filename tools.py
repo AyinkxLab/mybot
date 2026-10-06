@@ -1,4 +1,6 @@
+import base64
 import difflib
+import io
 import ipaddress
 import json
 import os
@@ -297,11 +299,47 @@ def _pyautogui():
     return pyautogui
 
 
+_last_scale = 1.0
+
+
+def take_screenshot(max_width: int = 1280) -> str:
+    pg = _pyautogui()
+    if pg is None:
+        return "ERROR: gui tools need pyautogui (pip install pyautogui)"
+    global _last_scale
+    try:
+        shot = pg.screenshot()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    width, height = shot.size
+    if width > max_width:
+        _last_scale = width / max_width
+        shot = shot.resize((max_width, int(height / _last_scale)))
+    else:
+        _last_scale = 1.0
+    buffer = io.BytesIO()
+    shot.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    try:
+        _safe_path(".mybot_shot.png").write_bytes(buffer.getvalue())
+    except Exception:
+        pass
+    return json.dumps(
+        {
+            "type": "image",
+            "data_url": "data:image/png;base64," + encoded,
+            "width": shot.size[0],
+            "height": shot.size[1],
+            "scale": _last_scale,
+        }
+    )
+
+
 def gui_click(x: int, y: int) -> str:
     pg = _pyautogui()
     if pg is None:
         return "ERROR: gui tools need pyautogui (pip install pyautogui)"
-    pg.click(int(x), int(y))
+    pg.click(int(float(x) * _last_scale), int(float(y) * _last_scale))
     return f"Clicked at {x},{y}"
 
 
@@ -619,6 +657,18 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "take_screenshot",
+            "description": (
+                "Look at the screen: captures it and attaches the image so you can see it. "
+                "Use before clicking to find coordinates, and again to verify. Coordinates you "
+                "read are in the returned image; gui_click maps them to the real screen."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_task",
             "description": "Create a Windows scheduled task.",
             "parameters": {
@@ -771,6 +821,7 @@ _DISPATCH = {
     "gui_type": gui_type,
     "gui_hotkey": gui_hotkey,
     "gui_screenshot": gui_screenshot,
+    "take_screenshot": take_screenshot,
     "schedule_task": schedule_task,
     "list_tasks": list_tasks,
     "delete_task": delete_task,
