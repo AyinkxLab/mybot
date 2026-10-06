@@ -1,0 +1,32 @@
+{
+  "plugins": [
+    {
+      "name": "web-search",
+      "version": "1.0",
+      "description": "Search the web (DuckDuckGo) and return the top results.",
+      "file": "web-search.py",
+      "tags": ["web", "search"]
+    },
+    {
+      "name": "clipboard",
+      "version": "1.0",
+      "description": "Read and write the Windows clipboard.",
+      "file": "clipboard.py",
+      "tags": ["system"]
+    },
+    {
+      "name": "weather",
+      "version": "1.0",
+      "description": "Current weather for a city (wttr.in).",
+      "file": "weather.py",
+      "tags": ["web"]
+    },
+    {
+      "name": "generators",
+      "version": "1.0",
+      "description": "Generate strong passwords and UUIDs.",
+      "file": "generators.py",
+      "tags": ["utility"]
+    }
+  ]
+}
