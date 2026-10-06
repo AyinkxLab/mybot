@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 
@@ -33,6 +34,14 @@ from tools import (
 def _short(text: str, limit: int = 120) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _reasoning_summary(text: str):
+    content = text.strip()
+    match = re.match(r"^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)", content)
+    if not match:
+        return None, content
+    return match.group(1).strip(), content[match.end():].strip()
 
 
 def _fmt_tokens(value: int) -> str:
@@ -90,7 +99,7 @@ HELP = """[b]commands[/]
   /models      switch the model
   /theme       change theme (alias /themes)
   /mode        switch agent mode (build / plan)
-  /thinking    show/hide reasoning blocks
+  /thinking    expand/collapse reasoning blocks
   /details     expand/collapse tool output
   /compact     summarize the session (alias /summarize)
   /export      write the conversation to a Markdown file
@@ -190,52 +199,114 @@ class ToolView(Static):
         self.tool_name = name
         self.tool_args = args
         self._result = ""
-        self._detailed = detailed
+        self._expanded = detailed
         self._refresh_content()
 
     def _refresh_content(self) -> None:
-        if self._detailed:
-            self.update(
-                f"⚙ {self.tool_name}\n  args: {self.tool_args}\n  → {self._result}"
-            )
-        else:
-            tail = f"  →  {_short(self._result, 90)}" if self._result else ""
-            self.update(f"⚙ {self.tool_name}  {_short(self.tool_args, 60)}{tail}")
+        text = Text()
+        text.append(f"⚙ {self.tool_name}", style=f"bold {WARNING_COLOR}")
+        text.append(f"  {_short(self.tool_args, 70)}\n", style=MUTED_COLOR)
+        result = (self._result or "").strip()
+        if result:
+            lines = result.splitlines()
+            limit = 200 if self._expanded else 3
+            for line in lines[:limit]:
+                text.append("  " + line + "\n", style="#a0a0a0")
+            if len(lines) > limit:
+                text.append(
+                    f"  … {len(lines) - limit} more lines · click to expand\n",
+                    style="#5c5c5c",
+                )
+        self.update(text)
 
     def set_result(self, result: str) -> None:
         self._result = result
         self._refresh_content()
 
     def set_detailed(self, detailed: bool) -> None:
-        self._detailed = detailed
+        self._expanded = detailed
         self._refresh_content()
+
+    def on_click(self) -> None:
+        self._expanded = not self._expanded
+        self._refresh_content()
+
+
+WARNING_COLOR = "#f5a742"
+MUTED_COLOR = "#808080"
 
 
 class ThinkingView(Static):
-    def __init__(self) -> None:
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, expanded: bool = False) -> None:
         super().__init__(classes="thinking")
         self._text = ""
         self._start = time.monotonic()
+        self._elapsed = 0.0
+        self._done = False
+        self._expanded = expanded
+        self._i = 0
+        self._timer = None
         self._refresh_content()
 
-    def _refresh_content(self, head: str = "✻ Thinking…") -> None:
-        content = Text()
-        content.append(head + "\n", style="#6b7280")
-        content.append(self._text, style="italic #8b93a7")
-        self.update(content)
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.12, self._tick)
+
+    def on_unmount(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+
+    def _tick(self) -> None:
+        if not self._done:
+            self._i += 1
+            self._refresh_content()
+
+    def _refresh_content(self) -> None:
+        title, body = _reasoning_summary(self._text)
+        text = Text()
+        if not self._done:
+            frame = self.FRAMES[self._i % len(self.FRAMES)]
+            head = f"{frame} Thinking" + (f": {title}" if title else "")
+        else:
+            mark = "- " if self._expanded else "+ "
+            head = (
+                f"{mark}Thought"
+                + (f": {title}" if title else "")
+                + f" · {self._elapsed:.1f}s"
+            )
+        text.append(head + "\n", style=f"bold {WARNING_COLOR}")
+        if self._expanded and body:
+            text.append(body + "\n", style=MUTED_COLOR)
+        self.update(text)
 
     def append(self, chunk: str) -> None:
         self._text += chunk
         self._refresh_content()
 
     def finish(self) -> float:
-        elapsed = time.monotonic() - self._start
-        self._refresh_content(f"✻ Thought for {elapsed:.1f}s")
-        return elapsed
+        self._elapsed = time.monotonic() - self._start
+        self._done = True
+        if self._timer is not None:
+            self._timer.stop()
+        self._refresh_content()
+        return self._elapsed
 
-    def replay(self, text: str, elapsed: float) -> None:
+    def replay(self, text: str, elapsed: float, expanded: bool = False) -> None:
         self._text = text
-        self._refresh_content(f"✻ Thought for {elapsed:.1f}s")
+        self._elapsed = elapsed
+        self._done = True
+        self._expanded = expanded
+        self._refresh_content()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._refresh_content()
+
+    def on_click(self) -> None:
+        if self._done:
+            self._expanded = not self._expanded
+            self._refresh_content()
 
 
 class Spinner(Static):
@@ -445,10 +516,8 @@ class MybotApp(App):
     MarkdownBlock > .code_inline { color: #7fd88f; background: #1e1e1e; }
     MarkdownFence { background: #141414; color: #eeeeee; }
     MarkdownTableContent > .markdown-table--header { color: #fab283; text-style: bold; }
-    .tool { color: $warning; padding: 0 0 0 2; height: auto; }
-    .thinking { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; border-left: thick #4b5563; }
-    .think-head { color: #6b7280; height: 1; }
-    .think-body { color: #8b93a7; height: auto; }
+    .tool { padding: 0 0 0 3; height: auto; }
+    .thinking { margin: 0 0 1 0; padding: 0 0 0 3; height: auto; }
     #prompt { border: tall $surface; background: $panel; }
     #prompt:focus { border: tall $primary; }
     ApprovalScreen { align: center middle; }
@@ -498,7 +567,7 @@ class MybotApp(App):
         self.tokens_in = 0
         self.tokens_out = 0
         self.context_tokens = 0
-        self.show_thinking = True
+        self.show_thinking = False
         self.show_details = False
         self._last_tool = None
         self._last_tool_record = None
@@ -976,8 +1045,7 @@ class MybotApp(App):
                 kind = event["type"]
                 if kind == "reasoning":
                     self.call_from_thread(self._stop_spinner)
-                    if self.show_thinking:
-                        self.call_from_thread(self._add_reasoning, event["text"])
+                    self.call_from_thread(self._add_reasoning, event["text"])
                 elif kind == "delta":
                     self.call_from_thread(self._stop_spinner)
                     self.call_from_thread(assistant.append, event["text"])
@@ -1025,7 +1093,7 @@ class MybotApp(App):
 
     def _add_reasoning(self, chunk: str) -> None:
         if self._thinking is None:
-            self._thinking = ThinkingView()
+            self._thinking = ThinkingView(expanded=self.show_thinking)
             self._thinking_views.append(self._thinking)
             self.query_one("#chat", VerticalScroll).mount(self._thinking)
         self._thinking.append(chunk)
@@ -1111,8 +1179,8 @@ class MybotApp(App):
     def _toggle_thinking(self) -> None:
         self.show_thinking = not self.show_thinking
         for view in self._thinking_views:
-            view.display = self.show_thinking
-        self._note(f"Thinking blocks: {'shown' if self.show_thinking else 'hidden'}")
+            view.set_expanded(self.show_thinking)
+        self._note(f"Thinking: {'expanded' if self.show_thinking else 'collapsed'}")
 
     def _toggle_details(self) -> None:
         self.show_details = not self.show_details
@@ -1220,9 +1288,10 @@ class MybotApp(App):
             if "role" in record:
                 chat.mount(MessageView(record["role"], record["text"]))
             elif record["kind"] == "thinking":
-                view = ThinkingView()
-                view.replay(record["text"], record.get("elapsed", 0.0))
-                view.display = self.show_thinking
+                view = ThinkingView(expanded=self.show_thinking)
+                view.replay(
+                    record["text"], record.get("elapsed", 0.0), expanded=self.show_thinking
+                )
                 self._thinking_views.append(view)
                 chat.mount(view)
             elif record["kind"] == "tool":
