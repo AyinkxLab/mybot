@@ -99,6 +99,8 @@ CONTEXT_WINDOWS = {
 }
 DEFAULT_CONTEXT = 128_000
 
+WORK_FRAMES = ["▱▱▱▱", "▰▱▱▱", "▰▰▱▱", "▰▰▰▱", "▰▰▰▰", "▰▰▰▱", "▰▰▱▱", "▰▱▱▱"]
+
 MODES = {
     "build": "",
     "plan": (
@@ -841,6 +843,9 @@ class MybotApp(App):
         self._thinking_views = []
         self._tool_views = []
         self._spinner = None
+        self._working = False
+        self._work_i = 0
+        self._work_timer = None
         self._leader = False
         self._cmdmenu_visible = False
         self._cmdmenu_matches = []
@@ -1136,12 +1141,17 @@ class MybotApp(App):
         model = model_label(self.agent.model) if self.agent else "not connected"
         provider = load_auth().get("provider", "")
         left = Text()
-        left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
-        left.append(" auto ", style=MUTED)
-        left.append("· ", style=MUTED)
-        left.append(model, style=TEXT_COLOR)
-        if provider:
-            left.append(f"  {provider}", style=MUTED)
+        if self._working:
+            left.append(WORK_FRAMES[self._work_i % len(WORK_FRAMES)] + " ", style=ACCENT_SOFT)
+            left.append("working", style=TEXT_COLOR)
+            left.append("  ·  esc to interrupt", style=MUTED)
+        else:
+            left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+            left.append(" auto ", style=MUTED)
+            left.append("· ", style=MUTED)
+            left.append(model, style=TEXT_COLOR)
+            if provider:
+                left.append(f"  {provider}", style=MUTED)
         self.query_one("#status-left", Static).update(left)
 
         cost = self._cost()
@@ -1267,6 +1277,7 @@ class MybotApp(App):
         self._cancel.clear()
         self._thinking = None
         self._start_spinner()
+        self._start_working()
         self._refresh_status()
         model_override = None
         if LLM_MODEL_FAST and len(text) < 60 and "\n" not in text and "`" not in text:
@@ -1310,6 +1321,26 @@ class MybotApp(App):
             except Exception:
                 pass
             self._spinner = None
+
+    def _start_working(self) -> None:
+        self._working = True
+        self._work_i = 0
+        if self._work_timer is None:
+            self._work_timer = self.set_interval(0.15, self._tick_working)
+        self._refresh_status()
+
+    def _tick_working(self) -> None:
+        if not self._working:
+            return
+        self._work_i += 1
+        self._refresh_status()
+
+    def _stop_working(self) -> None:
+        self._working = False
+        if self._work_timer is not None:
+            self._work_timer.stop()
+            self._work_timer = None
+        self._refresh_status()
 
     MENU_FOR_INPUT = {"prompt": "cmdmenu", "home-input": "home-cmdmenu"}
 
@@ -1710,6 +1741,7 @@ class MybotApp(App):
 
     def _finish(self) -> None:
         self._stop_spinner()
+        self._stop_working()
         self._finish_thinking()
         self.busy = False
         self._refresh_status()
