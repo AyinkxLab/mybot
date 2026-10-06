@@ -1,3 +1,5 @@
+import json
+import random
 import re
 import threading
 import time
@@ -7,9 +9,10 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Input, Markdown, OptionList, Select, Static
+from textual.widgets import Button, Input, Markdown, OptionList, Select, Static, TextArea
 from textual.widgets.option_list import Option
 
 from agent import Agent
@@ -104,6 +107,7 @@ HELP = """[b]commands[/]
   /compact     summarize the session (alias /summarize)
   /export      write the conversation to a Markdown file
   /sessions    switch between sessions (aliases /resume /continue)
+  /status      show system status
   /undo        remove the last turn (alias ctrl+x u)
   /redo        restore an undone turn (alias ctrl+x r)
   /new         new session (alias /clear)
@@ -116,6 +120,7 @@ HELP = """[b]commands[/]
   @file        attach file contents to your message
 
 [b]keys[/]
+  enter   send           ctrl+j  newline in the prompt
   tab     agent mode     ctrl+p  command palette    ctrl+o  toggle sidebar
   ctrl+x  leader (n l u r t m c x q)                 ctrl+t  theme
   ctrl+n  new session    esc     cancel run          ctrl+c  quit
@@ -132,12 +137,36 @@ BANNER = [
 ]
 ACCENT = "#5c9cf5"
 ACCENT_SOFT = "#5c9cf5"
+TEXT_COLOR = "#eeeeee"
+MUTED = "#808080"
 VERSION = "mybot 0.1.0"
-HOME_PLACEHOLDER = 'Ask anything...  "What is the tech stack of this project?"'
+HOME_PLACEHOLDERS = [
+    "Fix a TODO in the codebase",
+    "What is the tech stack of this project?",
+    "Fix broken tests",
+]
+NO_MODELS_TIP = "Run {highlight}/connect{/highlight} to add an AI provider and start coding"
+TIPS = [
+    "Type {highlight}@{/highlight} followed by a filename to attach files",
+    "Start a message with {highlight}!{/highlight} to run shell commands (e.g., {highlight}!ls -la{/highlight})",
+    "Use {highlight}/undo{/highlight} to revert the last turn",
+    "Use {highlight}/redo{/highlight} to restore an undone turn",
+    "Use {highlight}/models{/highlight} to switch between available AI models",
+    "Use {highlight}/themes{/highlight} to switch themes",
+    "Use {highlight}/new{/highlight} to start a fresh session",
+    "Use {highlight}/sessions{/highlight} to list and continue sessions",
+    "Run {highlight}/compact{/highlight} to summarize long sessions",
+    "Use {highlight}/export{/highlight} to save the conversation as Markdown",
+    "Run {highlight}/connect{/highlight} to add an AI provider",
+    "Press {highlight}tab{/highlight} to switch between Build and Plan agents",
+    "Set {highlight}REQUIRE_APPROVAL=true{/highlight} to gate risky commands",
+    "Use {highlight}/thinking{/highlight} to expand or collapse reasoning",
+    "Press {highlight}esc{/highlight} to stop the AI mid-response",
+]
 
 
 def _logo() -> Text:
-    muted, bright = "#808080", "#eeeeee"
+    muted, bright = MUTED, TEXT_COLOR
     text = Text(justify="center")
     for line in BANNER:
         half = len(line) // 2
@@ -147,21 +176,71 @@ def _logo() -> Text:
     return text
 
 
+def _placeholder_text() -> str:
+    return f'Ask anything… "{random.choice(HOME_PLACEHOLDERS)}"'
+
+
+def _parse_tip(tip: str):
+    parts = []
+    index = 0
+    for match in re.finditer(r"\{highlight\}(.*?)\{/highlight\}", tip):
+        if match.start() > index:
+            parts.append((tip[index : match.start()], False))
+        parts.append((match.group(1), True))
+        index = match.end()
+    if index < len(tip):
+        parts.append((tip[index:], False))
+    return parts
+
+
 def _hint_text() -> Text:
-    text = Text(justify="center")
-    text.append("tab", style="bold #c9d1d9")
-    text.append(" agents        ", style="#6b7280")
-    text.append("ctrl+p", style="bold #c9d1d9")
-    text.append(" commands", style="#6b7280")
+    text = Text(justify="right")
+    text.append("tab", style=TEXT_COLOR)
+    text.append(" agents      ", style=MUTED)
+    text.append("ctrl+p", style=TEXT_COLOR)
+    text.append(" commands", style=MUTED)
     return text
 
 
-def _tip_text() -> Text:
+def _tip_text(connected: bool = True) -> Text:
+    tip = NO_MODELS_TIP if not connected else random.choice(TIPS)
     text = Text(justify="center")
-    text.append("● ", style="#eab308")
-    text.append("Tip   ", style="bold #c9d1d9")
-    text.append("Set REQUIRE_APPROVAL=true to gate risky commands", style="#6b7280")
+    text.append("● Tip  ", style=WARNING_COLOR)
+    for part, highlight in _parse_tip(tip):
+        text.append(part, style=TEXT_COLOR if highlight else MUTED)
     return text
+
+
+class PromptArea(TextArea):
+    class Submitted(Message):
+        def __init__(self, area: "PromptArea", value: str) -> None:
+            super().__init__()
+            self.area = area
+            self.value = value
+
+    def __init__(self, placeholder: str = "", id: str | None = None) -> None:
+        super().__init__(
+            theme="css",
+            soft_wrap=True,
+            compact=True,
+            placeholder=placeholder,
+            show_line_numbers=False,
+            highlight_cursor_line=False,
+            id=id,
+        )
+
+    async def _on_key(self, event) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(self, self.text))
+            return
+        if event.key in ("ctrl+j", "shift+enter"):
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
 
 
 class Session:
@@ -193,21 +272,55 @@ class MessageView(Vertical):
         self.query_one(Markdown).update(self._text)
 
 
+def _tool_label(name: str, args: str):
+    try:
+        data = json.loads(args) if args else {}
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if name == "run_shell":
+        return "$", data.get("command", "")
+    if name == "read_file":
+        return "→", f'Read {data.get("path", "")}'
+    if name == "write_file":
+        return "←", f'Write {data.get("path", "")}'
+    if name == "list_dir":
+        return "✱", f'List {data.get("path", ".")}'
+    if name == "http_get":
+        return "%", f'WebFetch {data.get("url", "")}'
+    if name == "github_request":
+        return "✱", f'{data.get("method", "GET")} {data.get("path", "")}'
+    if name == "launch_app":
+        return "⚙", f'Launch {data.get("target", "")}'
+    if name == "schedule_task":
+        return "⚙", f'Schedule {data.get("name", "")}'
+    if name == "todo_write":
+        return "☑", "Update todos"
+    return "⚙", f"{name} {_short(args, 60)}"
+
+
 class ToolView(Static):
     def __init__(self, name: str, args: str, detailed: bool = False) -> None:
         super().__init__(classes="tool")
         self.tool_name = name
         self.tool_args = args
+        self._icon, self._label = _tool_label(name, args)
         self._result = ""
         self._expanded = detailed
         self._refresh_content()
 
+    def _failed(self) -> bool:
+        return self._result.startswith("ERROR") or self._result.startswith("DENIED")
+
     def _refresh_content(self) -> None:
+        failed = self._failed()
         text = Text()
-        text.append(f"⚙ {self.tool_name}", style=f"bold {WARNING_COLOR}")
-        text.append(f"  {_short(self.tool_args, 70)}\n", style=MUTED_COLOR)
+        text.append(f"{self._icon} ", style=ERROR_COLOR if failed else MUTED_COLOR)
+        text.append(self._label, style=ERROR_COLOR if failed else TEXT_COLOR)
+        text.append("\n")
         result = (self._result or "").strip()
-        if result:
+        if result and (not failed or self._expanded):
             lines = result.splitlines()
             limit = 200 if self._expanded else 3
             for line in lines[:limit]:
@@ -217,6 +330,8 @@ class ToolView(Static):
                     f"  … {len(lines) - limit} more lines · click to expand\n",
                     style="#5c5c5c",
                 )
+        elif failed:
+            text.append("  " + _short(result, 100) + "\n", style=ERROR_COLOR)
         self.update(text)
 
     def set_result(self, result: str) -> None:
@@ -234,6 +349,7 @@ class ToolView(Static):
 
 WARNING_COLOR = "#f5a742"
 MUTED_COLOR = "#808080"
+ERROR_COLOR = "#e06c75"
 
 
 class ThinkingView(Static):
@@ -501,6 +617,9 @@ class MybotApp(App):
     #statusbar { height: 1; background: $panel; padding: 0 1; }
     #status-left { width: 1fr; }
     #status-right { width: auto; text-align: right; }
+    #session-footer { height: 1; background: $panel; padding: 0 1; }
+    #footer-left { width: 1fr; color: $text-muted; }
+    #footer-right { width: auto; text-align: right; color: $text-muted; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
     .msg.you { border-left: thick #5c9cf5; }
     .msg.mybot { border-left: none; }
@@ -518,8 +637,8 @@ class MybotApp(App):
     MarkdownTableContent > .markdown-table--header { color: #fab283; text-style: bold; }
     .tool { padding: 0 0 0 3; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 3; height: auto; }
-    #prompt { border: tall $surface; background: $panel; }
-    #prompt:focus { border: tall $primary; }
+    #prompt { height: auto; max-height: 10; border: none; background: $panel; padding: 0 1; }
+    #prompt:focus { border: none; }
     ApprovalScreen { align: center middle; }
     #approval { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
     #approval-title { text-style: bold; color: $warning; }
@@ -532,14 +651,17 @@ class MybotApp(App):
     #model-row Select { width: 1fr; }
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
     #home { height: 1fr; align: center middle; }
-    #logo { width: 72; text-align: center; height: auto; }
-    #home-input { width: 72; border: solid $surface; border-left: thick $secondary; background: $panel; color: $foreground; }
-    #home-input:focus { border: solid $secondary; border-left: thick $secondary; }
-    #home-input .input--placeholder, #prompt .input--placeholder { color: #6b7280; }
-    #home-meta { width: 72; text-align: center; margin: 1 0 0 0; height: auto; }
-    #home-hint { width: 72; text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
-    #home-tip { width: 72; text-align: center; color: $text-muted; margin: 2 0 0 0; height: auto; }
-    #version { dock: bottom; height: 1; text-align: right; color: $text-muted; padding: 0 1; }
+    #logo { width: 75; text-align: center; height: auto; }
+    #home-prompt { width: 75; height: auto; border-left: thick $secondary; background: $panel; padding: 1 2; }
+    #home-input { width: 100%; height: auto; max-height: 10; border: none; background: $panel; color: $foreground; }
+    #home-input:focus { border: none; }
+    #home-input .text-area--placeholder, #prompt .text-area--placeholder { color: $text-muted; }
+    #home-agent { width: 100%; height: 1; margin: 1 0 0 0; }
+    #home-hints { width: 100%; height: 1; color: $text-muted; }
+    #home-tip { width: 75; text-align: center; color: $text-muted; margin: 3 0 0 0; height: auto; }
+    #home-footer { dock: bottom; height: 1; padding: 0 2; }
+    #home-dir { width: 1fr; color: $text-muted; }
+    #home-version { width: auto; color: $text-muted; }
     Chooser { align: center middle; }
     #palette { width: 60; height: auto; max-height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
     #palette-title { text-style: bold; color: $primary; margin: 0 0 1 0; }
@@ -594,16 +716,22 @@ class MybotApp(App):
             yield Sidebar(id="sidebar")
         with Vertical(id="home"):
             yield Static(_logo(), id="logo")
-            yield Input(placeholder=HOME_PLACEHOLDER, id="home-input")
-            yield Static("", id="home-meta")
-            yield Static(_hint_text(), id="home-hint")
-            yield Static(_tip_text(), id="home-tip")
+            with Vertical(id="home-prompt"):
+                yield PromptArea(placeholder=_placeholder_text(), id="home-input")
+                yield Static("", id="home-agent")
+                yield Static(_hint_text(), id="home-hints")
+            yield Static(_tip_text(is_configured()), id="home-tip")
         with Vertical(id="bottom"):
-            yield Input(placeholder="Ask mybot anything...", id="prompt")
+            yield PromptArea(placeholder="Ask mybot anything...", id="prompt")
             with Horizontal(id="statusbar"):
                 yield Static("", id="status-left")
                 yield Static("", id="status-right")
-        yield Static(VERSION, id="version")
+            with Horizontal(id="session-footer"):
+                yield Static("", id="footer-left")
+                yield Static("", id="footer-right")
+        with Horizontal(id="home-footer"):
+            yield Static("", id="home-dir")
+            yield Static(VERSION, id="home-version")
 
     def on_mount(self) -> None:
         self._register_themes()
@@ -623,6 +751,13 @@ class MybotApp(App):
         self._refresh_status()
         self._set_view("home")
         self._refresh_home_meta()
+        self._rotate_placeholder()
+
+    def _rotate_placeholder(self) -> None:
+        try:
+            self.query_one("#home-input", PromptArea).placeholder = _placeholder_text()
+        except Exception:
+            pass
 
     def _register_themes(self) -> None:
         self.register_theme(
@@ -770,23 +905,34 @@ class MybotApp(App):
         provider = load_auth().get("provider", "")
         left = Text()
         left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
-        left.append(" auto · ", style="#8b93a7")
-        left.append(model, style="#e5e7eb")
+        left.append(" auto ", style=MUTED)
+        left.append("· ", style=MUTED)
+        left.append(model, style=TEXT_COLOR)
         if provider:
-            left.append(f" {provider}", style="#6b7280")
+            left.append(f"  {provider}", style=MUTED)
         self.query_one("#status-left", Static).update(left)
 
         cost = self._cost()
         right = Text()
-        right.append(f"{WORKSPACE}   ", style="#6b7280")
         if self.context_tokens:
             right.append(
-                f"{self.context_tokens:,} ({self._context_percent():.0f}%)   ", style="#6b7280"
+                f"{self.context_tokens:,} ({self._context_percent():.0f}%)", style=MUTED
             )
-        if cost is not None:
-            right.append(f"${cost:.4f}   ", style="#6b7280")
-        right.append("ctrl+p commands", style="#6b7280")
+            if cost is not None:
+                right.append(f"   ${cost:.4f}", style=MUTED)
+        else:
+            right.append("tab", style=TEXT_COLOR)
+            right.append(" agents      ", style=MUTED)
+            right.append("ctrl+p", style=TEXT_COLOR)
+            right.append(" commands", style=MUTED)
         self.query_one("#status-right", Static).update(right)
+
+        self.query_one("#footer-left", Static).update(Text(str(WORKSPACE), style=MUTED))
+        footer = Text()
+        footer.append("● ", style=MUTED)
+        footer.append("0 LSP", style=TEXT_COLOR)
+        footer.append("   /status", style=MUTED)
+        self.query_one("#footer-right", Static).update(footer)
 
         sidebar = self.query_one(Sidebar)
         sidebar.set_context(self.context_tokens, self._context_percent(), cost or 0.0)
@@ -811,27 +957,29 @@ class MybotApp(App):
         self.query_one("#main").display = chat
         self.query_one("#bottom").display = chat
         self.query_one("#home").display = not chat
-        self.query_one("#version").display = not chat
+        self.query_one("#home-footer").display = not chat
         if chat:
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", PromptArea).focus()
         else:
-            self.query_one("#home-input", Input).focus()
+            self.query_one("#home-input", PromptArea).focus()
 
     def _refresh_home_meta(self) -> None:
-        meta = Text(justify="center")
+        meta = Text()
         if self.agent is not None:
             provider = load_auth().get("provider", "")
-            meta.append("● ", style=ACCENT_SOFT)
             meta.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
-            meta.append(" auto ", style="#8b93a7")
-            meta.append("· ", style="#4b5563")
-            meta.append(self.agent.model, style="#e5e7eb")
+            meta.append(" auto ", style=MUTED)
+            meta.append("· ", style=MUTED)
+            meta.append(self.agent.model, style=TEXT_COLOR)
             if provider:
-                meta.append(f"  {provider}", style="#6b7280")
+                meta.append(f"  {provider}", style=MUTED)
         else:
-            meta.append("● ", style="#eab308")
-            meta.append("not connected · type /connect to add an API key", style="#eab308")
-        self.query_one("#home-meta", Static).update(meta)
+            meta.append("not connected", style=WARNING_COLOR)
+            meta.append("   Run ", style=MUTED)
+            meta.append("/connect", style=TEXT_COLOR)
+            meta.append(" to add an AI provider", style=MUTED)
+        self.query_one("#home-agent", Static).update(meta)
+        self.query_one("#home-dir", Static).update(str(WORKSPACE))
 
     def _scroll_end(self) -> None:
         try:
@@ -845,11 +993,12 @@ class MybotApp(App):
         self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", text))
         self._scroll_end()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         text = event.value.strip()
-        event.input.value = ""
+        event.area.load_text("")
         if not text or self.busy:
             return
+        self._rotate_placeholder()
         if text.startswith("/"):
             self._command(text)
             return
@@ -912,6 +1061,7 @@ class MybotApp(App):
             "/compact": "compact",
             "/summarize": "compact",
             "/export": "export",
+            "/status": "status",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
@@ -951,6 +1101,8 @@ class MybotApp(App):
             self._compact()
         elif action == "export":
             self._export()
+        elif action == "status":
+            self._status()
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
@@ -1159,7 +1311,7 @@ class MybotApp(App):
         self.busy = False
         self._refresh_status()
         self._scroll_end()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptArea).focus()
 
     def _approve(self, action: str) -> bool:
         event = threading.Event()
@@ -1214,6 +1366,24 @@ class MybotApp(App):
             self._note(f"export error: {exc}")
             return
         self._note(f"Exported conversation to {out}")
+
+    def _status(self) -> None:
+        provider = load_auth().get("provider", "")
+        cost = self._cost()
+        model = self.agent.model if self.agent else "not connected"
+        lines = [
+            "**System status**",
+            "",
+            f"- model: `{model}`",
+            f"- provider: `{provider or '-'}`",
+            f"- mode: `{self.mode}`",
+            f"- workspace: `{WORKSPACE}`",
+            f"- tools: {len(TOOL_SPECS)}",
+            "- lsp: disabled",
+            f"- context: {self.context_tokens:,} tokens ({self._context_percent():.0f}%)",
+            f"- cost: {'$%.4f' % cost if cost is not None else '-'}",
+        ]
+        self._note("\n".join(lines))
 
     def action_leader(self) -> None:
         self._leader = True
@@ -1353,6 +1523,7 @@ class MybotApp(App):
         todo_write([])
         self.query_one(Sidebar).set_todos([])
         self._refresh_home_meta()
+        self._rotate_placeholder()
 
     def action_toggle_todos(self) -> None:
         sidebar = self.query_one(Sidebar)
