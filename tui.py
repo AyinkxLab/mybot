@@ -24,7 +24,13 @@ from auth import (
     model_label,
     save_auth,
 )
-from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
+from config import (
+    LLM_MODEL_FAST,
+    MAX_SESSION_COST,
+    REQUIRE_APPROVAL,
+    SYSTEM_PROMPT,
+    WORKSPACE,
+)
 from memory import load_sessions, save_sessions
 from tools import (
     TOOL_SPECS,
@@ -1113,6 +1119,13 @@ class MybotApp(App):
         if text.startswith("/"):
             self._command(text)
             return
+        cost = self._cost()
+        if MAX_SESSION_COST and cost is not None and cost >= MAX_SESSION_COST:
+            self._note(
+                f"Session budget reached (${cost:.4f} of ${MAX_SESSION_COST:.2f}). "
+                "Start /new or raise MAX_SESSION_COST."
+            )
+            return
         if self.view == "home":
             self._set_view("chat")
         if self.title == "new session":
@@ -1134,7 +1147,10 @@ class MybotApp(App):
         self._thinking = None
         self._start_spinner()
         self._refresh_status()
-        self._run_agent(self._expand_refs(text), assistant)
+        model_override = None
+        if LLM_MODEL_FAST and len(text) < 60 and "\n" not in text and "`" not in text:
+            model_override = LLM_MODEL_FAST
+        self._run_agent(self._expand_refs(text), assistant, model_override)
 
     def _expand_refs(self, text: str) -> str:
         refs = [token[1:] for token in text.split() if token.startswith("@") and len(token) > 1]
@@ -1360,19 +1376,21 @@ class MybotApp(App):
         )
 
     @work(thread=True)
-    def _run_agent(self, text: str, assistant: MessageView) -> None:
+    def _run_agent(self, text: str, assistant: MessageView, model: str = None) -> None:
         if self.agent is None:
             self.call_from_thread(assistant.set_text, "Not connected - type /connect first.")
             self.call_from_thread(self._finish)
             return
         start = time.monotonic()
         try:
-            for event in self.agent.respond_stream(text):
+            for event in self.agent.respond_stream(text, model):
                 if self._cancel.is_set():
                     self.call_from_thread(assistant.append, "\n\n_\\[cancelled]_")
                     break
                 kind = event["type"]
-                if kind == "reasoning":
+                if kind == "notice":
+                    self.call_from_thread(self._note, event["text"])
+                elif kind == "reasoning":
                     self.call_from_thread(self._stop_spinner)
                     self.call_from_thread(self._add_reasoning, event["text"])
                 elif kind == "delta":
@@ -1564,6 +1582,10 @@ class MybotApp(App):
             f"- context: {self.context_tokens:,} tokens ({self._context_percent():.0f}%)",
             f"- cost: {'$%.4f' % cost if cost is not None else '-'}",
         ]
+        if MAX_SESSION_COST:
+            lines.append(f"- budget: ${MAX_SESSION_COST:.2f}")
+        if LLM_MODEL_FAST:
+            lines.append(f"- fast model: `{LLM_MODEL_FAST}`")
         self._note("\n".join(lines))
 
     def action_leader(self) -> None:
