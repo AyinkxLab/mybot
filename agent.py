@@ -1,3 +1,4 @@
+import json
 from itertools import chain
 
 from openai import OpenAI
@@ -198,8 +199,34 @@ class Agent:
                 name = call["function"]["name"]
                 yield {"type": "tool", "name": name, "args": call["function"]["arguments"]}
                 result = execute_tool(name, call["function"]["arguments"])
-                yield {"type": "tool_result", "name": name, "result": result}
-                self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                image = None
+                if name == "take_screenshot":
+                    try:
+                        parsed = json.loads(result)
+                        if isinstance(parsed, dict) and parsed.get("type") == "image":
+                            image = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        image = None
+                if image:
+                    label = f"screenshot {image.get('width')}x{image.get('height')} (attached)"
+                    yield {"type": "tool_result", "name": name, "result": label}
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": label}
+                    )
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Current screen:"},
+                                {"type": "image_url", "image_url": {"url": image["data_url"]}},
+                            ],
+                        }
+                    )
+                else:
+                    yield {"type": "tool_result", "name": name, "result": result}
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": result}
+                    )
 
         self._trim()
         yield {"type": "final", "text": "Stopped: reached the tool-call limit for one turn."}

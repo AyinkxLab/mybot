@@ -69,6 +69,9 @@ Rules:
 - File tools operate within the configured workspace root. Use absolute paths when the root is a drive.
 - Use the shell tool for running programs and scripts; keep commands non-destructive unless asked.
 - Use launch_app to open programs, files, or URLs, and the gui_* tools to drive the desktop.
+- To operate the GUI (computer use): call take_screenshot to look at the screen, then gui_click \
+/ gui_type / gui_hotkey. Coordinates are in the screenshot image; gui_click maps them back to \
+the real screen. Screenshot again to verify each step, and prefer keyboard shortcuts.
 - Use schedule_task/list_tasks/delete_task to manage Windows scheduled jobs.
 - For any task with several steps, first call todo_write with a short plan, then keep it \
 updated: mark the current item in_progress and finish items as completed. Keep one item \

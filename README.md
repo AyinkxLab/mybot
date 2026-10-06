@@ -104,9 +104,16 @@ This is a powerful and risky configuration and is entirely at your own discretio
 ## Tools
 
 `read_file`, `write_file`, `list_dir`, `run_shell`, `http_get`, `github_request`,
-`launch_app`, `gui_click`, `gui_type`, `gui_hotkey`, `gui_screenshot`,
+`launch_app`, `gui_click`, `gui_type`, `gui_hotkey`, `gui_screenshot`, `take_screenshot`,
 `schedule_task`, `list_tasks`, `delete_task`, `todo_write`, `remember`, `recall`,
 `add_trigger`, `list_triggers`, `remove_trigger`.
+
+## Computer use
+
+The bot can operate your desktop. `take_screenshot` captures the screen and attaches it so the
+vision model can *see* it; it then uses `gui_click` / `gui_type` / `gui_hotkey` to act.
+Coordinates are read off the screenshot and mapped back to the real screen. Example:
+"open Settings and turn off notifications". Needs `pyautogui`; use with care.
 
 ## Triggers (background automation)
 
