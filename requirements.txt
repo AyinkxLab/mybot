@@ -13,3 +13,8 @@ pyautogui>=0.9.54
 # Optional: needed for the chat adapters
 python-telegram-bot>=21.0
 discord.py>=2.4.0
+
+# Optional: voice input (/voice) - local Whisper + mic capture
+# faster-whisper
+# sounddevice
+# numpy

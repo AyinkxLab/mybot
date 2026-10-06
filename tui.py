@@ -1,8 +1,11 @@
+import base64
 import json
+import mimetypes
 import random
 import re
 import threading
 import time
+from pathlib import Path
 
 from rich.text import Text
 from textual import work
@@ -124,6 +127,7 @@ COMMAND_LIST = [
     ("/sessions", "switch between sessions"),
     ("/status", "show system status"),
     ("/triggers", "manage background triggers"),
+    ("/voice", "record and transcribe (optional)"),
     ("/new", "start a new session"),
     ("/reset", "clear conversation history"),
     ("/undo", "remove the last turn"),
@@ -144,6 +148,7 @@ HELP = """[b]commands[/]
   /sessions    switch between sessions (aliases /resume /continue)
   /status      show system status
   /triggers    list background triggers
+  /voice       record + transcribe (needs optional deps)
   /undo        remove the last turn (alias ctrl+x u)
   /redo        restore an undone turn (alias ctrl+x r)
   /new         new session (alias /clear)
@@ -154,6 +159,7 @@ HELP = """[b]commands[/]
 [b]prefixes[/]
   !cmd         run a shell command
   @file        attach file contents to your message
+  @image.png   attach an image (or drag a file in) for vision models
 
 [b]keys[/]
   enter   send           ctrl+j  newline in the prompt
@@ -211,6 +217,18 @@ def _logo() -> Text:
         text.append(line[half:], style=f"bold {bright}")
         text.append("\n")
     return text
+
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def _image_data_url(path: str) -> str:
+    target = Path(path)
+    if not target.is_absolute():
+        target = WORKSPACE / target
+    data = target.read_bytes()
+    mime = mimetypes.guess_type(str(target))[0] or "image/png"
+    return f"data:{mime};base64," + base64.b64encode(data).decode()
 
 
 def _placeholder_text() -> str:
@@ -1171,16 +1189,31 @@ class MybotApp(App):
         model_override = None
         if LLM_MODEL_FAST and len(text) < 60 and "\n" not in text and "`" not in text:
             model_override = LLM_MODEL_FAST
-        self._run_agent(self._expand_refs(text), assistant, model_override)
+        enriched, images = self._expand_refs(text)
+        self._run_agent(enriched, assistant, model_override, images)
 
-    def _expand_refs(self, text: str) -> str:
-        refs = [token[1:] for token in text.split() if token.startswith("@") and len(token) > 1]
+    def _expand_refs(self, text: str):
         blocks = []
-        for ref in refs:
-            content = read_file(ref)
-            if not content.startswith("ERROR"):
-                blocks.append(f"--- {ref} ---\n{content}")
-        return text + "\n\n" + "\n\n".join(blocks) if blocks else text
+        images = []
+        for token in text.split():
+            raw = token.strip("\"'")
+            if raw.startswith("@") and len(raw) > 1:
+                ref = raw[1:]
+            elif Path(raw).suffix.lower() in IMAGE_EXTS:
+                ref = raw
+            else:
+                continue
+            if Path(ref).suffix.lower() in IMAGE_EXTS:
+                try:
+                    images.append(_image_data_url(ref))
+                except Exception:
+                    pass
+            else:
+                content = read_file(ref)
+                if not content.startswith("ERROR"):
+                    blocks.append(f"--- {ref} ---\n{content}")
+        enriched = text + "\n\n" + "\n\n".join(blocks) if blocks else text
+        return enriched, images
 
     def _start_spinner(self) -> None:
         self._stop_spinner()
@@ -1276,6 +1309,7 @@ class MybotApp(App):
             "/export": "export",
             "/status": "status",
             "/triggers": "triggers",
+            "/voice": "voice",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
@@ -1319,6 +1353,8 @@ class MybotApp(App):
             self._status()
         elif action == "triggers":
             self._note("**Background triggers**\n\n" + list_triggers())
+        elif action == "voice":
+            self._voice()
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
@@ -1400,14 +1436,16 @@ class MybotApp(App):
         )
 
     @work(thread=True)
-    def _run_agent(self, text: str, assistant: MessageView, model: str = None) -> None:
+    def _run_agent(
+        self, text: str, assistant: MessageView, model: str = None, images: list = None
+    ) -> None:
         if self.agent is None:
             self.call_from_thread(assistant.set_text, "Not connected - type /connect first.")
             self.call_from_thread(self._finish)
             return
         start = time.monotonic()
         try:
-            for event in self.agent.respond_stream(text, model):
+            for event in self.agent.respond_stream(text, model, images):
                 if self._cancel.is_set():
                     self.call_from_thread(assistant.append, "\n\n_\\[cancelled]_")
                     break
@@ -1611,6 +1649,39 @@ class MybotApp(App):
         if LLM_MODEL_FAST:
             lines.append(f"- fast model: `{LLM_MODEL_FAST}`")
         self._note("\n".join(lines))
+
+    @work(thread=True)
+    def _voice(self) -> None:
+        try:
+            import voice as voice_mod
+        except Exception:
+            self.call_from_thread(self._note, "Voice module unavailable.")
+            return
+        if not voice_mod.available():
+            missing = ", ".join(voice_mod.missing())
+            self.call_from_thread(
+                self._note,
+                "Voice is optional. Install: pip install faster-whisper sounddevice numpy"
+                + (f"  (missing: {missing})" if missing else ""),
+            )
+            return
+        self.call_from_thread(self._note, "Recording 5s…")
+        try:
+            text = voice_mod.record_and_transcribe(5)
+        except Exception as exc:
+            self.call_from_thread(self._note, f"voice error: {exc}")
+            return
+        self.call_from_thread(self._set_prompt_text, text)
+
+    def _set_prompt_text(self, text: str) -> None:
+        if self.view == "home":
+            self._set_view("chat")
+        try:
+            area = self.query_one("#prompt", PromptArea)
+            area.load_text(text)
+            area.focus()
+        except Exception:
+            pass
 
     def action_leader(self) -> None:
         self._leader = True

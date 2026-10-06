@@ -122,6 +122,17 @@ The model can create them with `add_trigger`; list them with `/triggers`. For au
 `mybot` is *not* running, use `schedule_task` (Windows Task Scheduler) or a `.cmd` that runs
 `mybot`.
 
+## Images & voice
+
+Reference an image (e.g. `@diagram.png`, or drag a file into the terminal) and it's attached to
+your message as an `image_url` part for vision models (DeepSeek V4.1 Flash, GPT-4o, etc.).
+
+`/voice` records 5 seconds and transcribes **locally** with Whisper, then fills the prompt.
+Enable it (optional) with:
+```
+pip install faster-whisper sounddevice numpy
+```
+
 ## Chat adapters
 
 ```powershell
