@@ -1,6 +1,8 @@
-# Secrets
+# Secrets / local state
 .env
 .mybot_config.json
+.mybot_memory.json
+.mybot_sessions.json
 
 # Python
 __pycache__/

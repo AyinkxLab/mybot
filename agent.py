@@ -17,6 +17,14 @@ class Agent:
             raise RuntimeError("No API key set. Run /connect to add your provider key.")
         self.client = OpenAI(api_key=api_key, base_url=self.base_url)
         self.history_limit = history_limit
+        try:
+            from memory import format_notes
+
+            notes = format_notes()
+            if notes and not notes.startswith("("):
+                system_prompt = system_prompt + "\n\nThings you remember:\n" + notes
+        except Exception:
+            pass
         self.messages = [{"role": "system", "content": system_prompt}]
 
     def reset(self) -> None:
