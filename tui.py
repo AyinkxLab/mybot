@@ -28,8 +28,12 @@ from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
 from memory import load_sessions, save_sessions
 from tools import (
     TOOL_SPECS,
+    begin_snapshot,
+    end_snapshot,
     get_todos,
     read_file,
+    read_snapshot_files,
+    restore_snapshot,
     run_shell,
     set_approval_handler,
     todo_write,
@@ -354,7 +358,15 @@ class ToolView(Static):
             lines = result.splitlines()
             limit = 200 if self._expanded else 3
             for line in lines[:limit]:
-                text.append("  " + line + "\n", style="#a0a0a0")
+                if line.startswith("+") and not line.startswith("+++"):
+                    style = SUCCESS_COLOR
+                elif line.startswith("-") and not line.startswith("---"):
+                    style = ERROR_COLOR
+                elif line.startswith("@@"):
+                    style = "#7dcfff"
+                else:
+                    style = "#a0a0a0"
+                text.append("  " + line + "\n", style=style)
             if len(lines) > limit:
                 text.append(
                     f"  … {len(lines) - limit} more lines · click to expand\n",
@@ -380,6 +392,7 @@ class ToolView(Static):
 WARNING_COLOR = "#f5a742"
 MUTED_COLOR = "#808080"
 ERROR_COLOR = "#e06c75"
+SUCCESS_COLOR = "#7fd88f"
 
 
 class ThinkingView(Static):
@@ -1440,6 +1453,8 @@ class MybotApp(App):
         self.call_from_thread(view.set_result, result)
         self.call_from_thread(self._set_last_tool_result, result)
         self.call_from_thread(self._bash_context, command, result)
+        self.call_from_thread(self._attach_snapshot)
+        self.call_from_thread(self._persist)
 
     def _set_last_tool_result(self, result: str) -> None:
         if self._last_tool_record is not None:
@@ -1476,6 +1491,7 @@ class MybotApp(App):
         self._refresh_status()
         self._scroll_end()
         self.query_one("#prompt", PromptArea).focus()
+        self._attach_snapshot()
         self._persist()
 
     def _approve(self, action: str) -> bool:
@@ -1576,10 +1592,23 @@ class MybotApp(App):
             self._run_command(action)
 
     def _push_undo(self) -> None:
-        if self.agent is None:
-            return
-        self._undo_stack.append((len(self.agent.messages), len(self._session().records)))
+        self._undo_stack.append(
+            {
+                "msgs": len(self.agent.messages) if self.agent else 0,
+                "recs": len(self._session().records),
+                "files": {},
+                "files_after": {},
+            }
+        )
         self._redo_stack.clear()
+        begin_snapshot()
+
+    def _attach_snapshot(self) -> None:
+        snapshot = end_snapshot()
+        if self._undo_stack and snapshot:
+            entry = self._undo_stack[-1]
+            entry["files"] = snapshot
+            entry["files_after"] = read_snapshot_files(snapshot)
 
     def action_undo(self) -> None:
         if self.busy:
@@ -1588,15 +1617,29 @@ class MybotApp(App):
         if self.agent is None or not self._undo_stack:
             self._note("Nothing to undo.")
             return
-        msg_len, rec_len = self._undo_stack.pop()
+        entry = self._undo_stack.pop()
+        msg_len, rec_len = entry["msgs"], entry["recs"]
         removed_msgs = self.agent.messages[msg_len:]
         removed_recs = self._session().records[rec_len:]
         del self.agent.messages[msg_len:]
         del self._session().records[rec_len:]
-        self._redo_stack.append((msg_len, rec_len, removed_msgs, removed_recs))
+        files = entry.get("files") or {}
+        note = "Undid last turn."
+        if files:
+            restore_snapshot(files)
+            note = f"Undid last turn and reverted {len(files)} file(s)."
+        self._redo_stack.append(
+            {
+                "msgs": msg_len,
+                "recs": rec_len,
+                "removed_msgs": removed_msgs,
+                "removed_recs": removed_recs,
+                "files_after": entry.get("files_after") or {},
+            }
+        )
         self._rebuild_chat()
         self._refresh_status()
-        self._note("Undid last turn.")
+        self._note(note)
         self._persist()
 
     def action_redo(self) -> None:
@@ -1606,10 +1649,14 @@ class MybotApp(App):
         if self.agent is None or not self._redo_stack:
             self._note("Nothing to redo.")
             return
-        msg_len, rec_len, removed_msgs, removed_recs = self._redo_stack.pop()
-        self.agent.messages[msg_len:msg_len] = removed_msgs
-        self._session().records[rec_len:rec_len] = removed_recs
-        self._undo_stack.append((msg_len, rec_len))
+        entry = self._redo_stack.pop()
+        msg_len, rec_len = entry["msgs"], entry["recs"]
+        self.agent.messages[msg_len:msg_len] = entry["removed_msgs"]
+        self._session().records[rec_len:rec_len] = entry["removed_recs"]
+        files_after = entry.get("files_after") or {}
+        if files_after:
+            restore_snapshot(files_after)
+        self._undo_stack.append({"msgs": msg_len, "recs": rec_len, "files": {}, "files_after": {}})
         self._rebuild_chat()
         self._refresh_status()
         self._note("Redid last turn.")

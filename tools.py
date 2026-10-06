@@ -1,3 +1,4 @@
+import difflib
 import ipaddress
 import json
 import os
@@ -85,6 +86,66 @@ def _truncate(text: str) -> str:
     return text
 
 
+_snapshot: dict = {}
+_snapshot_active = False
+
+
+def begin_snapshot() -> None:
+    global _snapshot, _snapshot_active
+    _snapshot = {}
+    _snapshot_active = True
+
+
+def end_snapshot() -> dict:
+    global _snapshot_active
+    _snapshot_active = False
+    return dict(_snapshot)
+
+
+def restore_snapshot(snapshot: dict) -> str:
+    restored = 0
+    for path, content in snapshot.items():
+        target = Path(path)
+        try:
+            if content is None:
+                if target.is_file():
+                    target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            restored += 1
+        except Exception as exc:
+            return f"ERROR restoring {path}: {exc}"
+    return f"Restored {restored} file(s)."
+
+
+def read_snapshot_files(snapshot: dict) -> dict:
+    after = {}
+    for path in snapshot:
+        target = Path(path)
+        try:
+            after[path] = (
+                target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
+            )
+        except Exception:
+            after[path] = None
+    return after
+
+
+def _record_snapshot(target: Path) -> None:
+    if not _snapshot_active:
+        return
+    key = str(target)
+    if key in _snapshot:
+        return
+    try:
+        _snapshot[key] = (
+            target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
+        )
+    except Exception:
+        _snapshot[key] = None
+
+
 def read_file(path: str) -> str:
     target = _safe_path(path)
     if not target.is_file():
@@ -97,8 +158,24 @@ def read_file(path: str) -> str:
 
 def write_file(path: str, content: str) -> str:
     target = _safe_path(path)
+    previous = (
+        target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
+    )
+    diff_lines = ""
+    if previous is not None and previous != content:
+        diff = list(
+            difflib.unified_diff(
+                previous.splitlines(), content.splitlines(), "before", "after", lineterm=""
+            )
+        )
+        diff_lines = "\n".join(diff[:200])
+        if REQUIRE_APPROVAL and not _ask_approval(f"overwrite {path}:\n{diff_lines}"):
+            return f"DENIED: user did not approve overwriting {path}"
+    _record_snapshot(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    if diff_lines:
+        return f"Wrote {len(content)} chars to {path}\n{diff_lines}"
     return f"Wrote {len(content)} chars to {path}"
 
 
