@@ -1,3 +1,4 @@
+import json
 import random
 import re
 import threading
@@ -106,6 +107,7 @@ HELP = """[b]commands[/]
   /compact     summarize the session (alias /summarize)
   /export      write the conversation to a Markdown file
   /sessions    switch between sessions (aliases /resume /continue)
+  /status      show system status
   /undo        remove the last turn (alias ctrl+x u)
   /redo        restore an undone turn (alias ctrl+x r)
   /new         new session (alias /clear)
@@ -270,21 +272,55 @@ class MessageView(Vertical):
         self.query_one(Markdown).update(self._text)
 
 
+def _tool_label(name: str, args: str):
+    try:
+        data = json.loads(args) if args else {}
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if name == "run_shell":
+        return "$", data.get("command", "")
+    if name == "read_file":
+        return "→", f'Read {data.get("path", "")}'
+    if name == "write_file":
+        return "←", f'Write {data.get("path", "")}'
+    if name == "list_dir":
+        return "✱", f'List {data.get("path", ".")}'
+    if name == "http_get":
+        return "%", f'WebFetch {data.get("url", "")}'
+    if name == "github_request":
+        return "✱", f'{data.get("method", "GET")} {data.get("path", "")}'
+    if name == "launch_app":
+        return "⚙", f'Launch {data.get("target", "")}'
+    if name == "schedule_task":
+        return "⚙", f'Schedule {data.get("name", "")}'
+    if name == "todo_write":
+        return "☑", "Update todos"
+    return "⚙", f"{name} {_short(args, 60)}"
+
+
 class ToolView(Static):
     def __init__(self, name: str, args: str, detailed: bool = False) -> None:
         super().__init__(classes="tool")
         self.tool_name = name
         self.tool_args = args
+        self._icon, self._label = _tool_label(name, args)
         self._result = ""
         self._expanded = detailed
         self._refresh_content()
 
+    def _failed(self) -> bool:
+        return self._result.startswith("ERROR") or self._result.startswith("DENIED")
+
     def _refresh_content(self) -> None:
+        failed = self._failed()
         text = Text()
-        text.append(f"⚙ {self.tool_name}", style=f"bold {WARNING_COLOR}")
-        text.append(f"  {_short(self.tool_args, 70)}\n", style=MUTED_COLOR)
+        text.append(f"{self._icon} ", style=ERROR_COLOR if failed else MUTED_COLOR)
+        text.append(self._label, style=ERROR_COLOR if failed else TEXT_COLOR)
+        text.append("\n")
         result = (self._result or "").strip()
-        if result:
+        if result and (not failed or self._expanded):
             lines = result.splitlines()
             limit = 200 if self._expanded else 3
             for line in lines[:limit]:
@@ -294,6 +330,8 @@ class ToolView(Static):
                     f"  … {len(lines) - limit} more lines · click to expand\n",
                     style="#5c5c5c",
                 )
+        elif failed:
+            text.append("  " + _short(result, 100) + "\n", style=ERROR_COLOR)
         self.update(text)
 
     def set_result(self, result: str) -> None:
@@ -311,6 +349,7 @@ class ToolView(Static):
 
 WARNING_COLOR = "#f5a742"
 MUTED_COLOR = "#808080"
+ERROR_COLOR = "#e06c75"
 
 
 class ThinkingView(Static):
@@ -578,6 +617,9 @@ class MybotApp(App):
     #statusbar { height: 1; background: $panel; padding: 0 1; }
     #status-left { width: 1fr; }
     #status-right { width: auto; text-align: right; }
+    #session-footer { height: 1; background: $panel; padding: 0 1; }
+    #footer-left { width: 1fr; color: $text-muted; }
+    #footer-right { width: auto; text-align: right; color: $text-muted; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
     .msg.you { border-left: thick #5c9cf5; }
     .msg.mybot { border-left: none; }
@@ -684,6 +726,9 @@ class MybotApp(App):
             with Horizontal(id="statusbar"):
                 yield Static("", id="status-left")
                 yield Static("", id="status-right")
+            with Horizontal(id="session-footer"):
+                yield Static("", id="footer-left")
+                yield Static("", id="footer-right")
         with Horizontal(id="home-footer"):
             yield Static("", id="home-dir")
             yield Static(VERSION, id="home-version")
@@ -860,23 +905,34 @@ class MybotApp(App):
         provider = load_auth().get("provider", "")
         left = Text()
         left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
-        left.append(" auto · ", style="#8b93a7")
-        left.append(model, style="#e5e7eb")
+        left.append(" auto ", style=MUTED)
+        left.append("· ", style=MUTED)
+        left.append(model, style=TEXT_COLOR)
         if provider:
-            left.append(f" {provider}", style="#6b7280")
+            left.append(f"  {provider}", style=MUTED)
         self.query_one("#status-left", Static).update(left)
 
         cost = self._cost()
         right = Text()
-        right.append(f"{WORKSPACE}   ", style="#6b7280")
         if self.context_tokens:
             right.append(
-                f"{self.context_tokens:,} ({self._context_percent():.0f}%)   ", style="#6b7280"
+                f"{self.context_tokens:,} ({self._context_percent():.0f}%)", style=MUTED
             )
-        if cost is not None:
-            right.append(f"${cost:.4f}   ", style="#6b7280")
-        right.append("ctrl+p commands", style="#6b7280")
+            if cost is not None:
+                right.append(f"   ${cost:.4f}", style=MUTED)
+        else:
+            right.append("tab", style=TEXT_COLOR)
+            right.append(" agents      ", style=MUTED)
+            right.append("ctrl+p", style=TEXT_COLOR)
+            right.append(" commands", style=MUTED)
         self.query_one("#status-right", Static).update(right)
+
+        self.query_one("#footer-left", Static).update(Text(str(WORKSPACE), style=MUTED))
+        footer = Text()
+        footer.append("● ", style=MUTED)
+        footer.append("0 LSP", style=TEXT_COLOR)
+        footer.append("   /status", style=MUTED)
+        self.query_one("#footer-right", Static).update(footer)
 
         sidebar = self.query_one(Sidebar)
         sidebar.set_context(self.context_tokens, self._context_percent(), cost or 0.0)
@@ -1005,6 +1061,7 @@ class MybotApp(App):
             "/compact": "compact",
             "/summarize": "compact",
             "/export": "export",
+            "/status": "status",
             "/reset": "reset",
             "/help": "help",
             "/new": "new",
@@ -1044,6 +1101,8 @@ class MybotApp(App):
             self._compact()
         elif action == "export":
             self._export()
+        elif action == "status":
+            self._status()
         elif action == "sessions":
             self._sessions_command()
         elif action == "undo":
@@ -1307,6 +1366,24 @@ class MybotApp(App):
             self._note(f"export error: {exc}")
             return
         self._note(f"Exported conversation to {out}")
+
+    def _status(self) -> None:
+        provider = load_auth().get("provider", "")
+        cost = self._cost()
+        model = self.agent.model if self.agent else "not connected"
+        lines = [
+            "**System status**",
+            "",
+            f"- model: `{model}`",
+            f"- provider: `{provider or '-'}`",
+            f"- mode: `{self.mode}`",
+            f"- workspace: `{WORKSPACE}`",
+            f"- tools: {len(TOOL_SPECS)}",
+            "- lsp: disabled",
+            f"- context: {self.context_tokens:,} tokens ({self._context_percent():.0f}%)",
+            f"- cost: {'$%.4f' % cost if cost is not None else '-'}",
+        ]
+        self._note("\n".join(lines))
 
     def action_leader(self) -> None:
         self._leader = True
