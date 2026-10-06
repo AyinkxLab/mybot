@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+from rich.console import Group
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -420,34 +422,58 @@ class ToolView(Static):
     def _failed(self) -> bool:
         return self._result.startswith("ERROR") or self._result.startswith("DENIED")
 
+    def _lexer(self) -> str:
+        if self.tool_name == "write_file":
+            return "diff"
+        try:
+            data = json.loads(self.tool_args) if self.tool_args else {}
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        path = ""
+        if isinstance(data, dict):
+            path = data.get("path") or data.get("filePath") or ""
+        ext = Path(path).suffix.lstrip(".")
+        return ext or "text"
+
+    def _limit(self) -> int:
+        if self._expanded:
+            return 3000
+        if self.tool_name in ("read_file", "write_file"):
+            return 200
+        if self.tool_name == "run_shell":
+            return 20
+        return 6
+
     def _refresh_content(self) -> None:
         failed = self._failed()
-        text = Text()
-        text.append(f"{self._icon} ", style=ERROR_COLOR if failed else MUTED_COLOR)
-        text.append(self._label, style=ERROR_COLOR if failed else TEXT_COLOR)
-        text.append("\n")
+        header = Text()
+        header.append(f"{self._icon} ", style=ERROR_COLOR if failed else MUTED_COLOR)
+        header.append(self._label, style=ERROR_COLOR if failed else TEXT_COLOR)
         result = (self._result or "").strip()
-        if result and (not failed or self._expanded):
-            lines = result.splitlines()
-            limit = 200 if self._expanded else 3
-            for line in lines[:limit]:
-                if line.startswith("+") and not line.startswith("+++"):
-                    style = SUCCESS_COLOR
-                elif line.startswith("-") and not line.startswith("---"):
-                    style = ERROR_COLOR
-                elif line.startswith("@@"):
-                    style = "#7dcfff"
-                else:
-                    style = "#a0a0a0"
-                text.append("  " + line + "\n", style=style)
-            if len(lines) > limit:
-                text.append(
-                    f"  … {len(lines) - limit} more lines · click to expand\n",
-                    style="#5c5c5c",
-                )
-        elif failed:
-            text.append("  " + _short(result, 100) + "\n", style=ERROR_COLOR)
-        self.update(text)
+        if not result:
+            self.update(header)
+            return
+        lines = result.splitlines()
+        limit = self._limit()
+        shown = "\n".join(lines[:limit])
+        if len(lines) > limit:
+            shown += f"\n… {len(lines) - limit} more lines · click to expand"
+        lexer = self._lexer()
+        try:
+            body = Syntax(
+                shown,
+                lexer,
+                line_numbers=lexer not in ("text", "diff"),
+                theme="monokai",
+                word_wrap=False,
+                background_color="default",
+                padding=(0, 2),
+            )
+            self.update(Group(header, body))
+        except Exception:
+            fallback = header.copy()
+            fallback.append("\n" + _short(shown, 3000))
+            self.update(fallback)
 
     def set_result(self, result: str) -> None:
         self._result = result

@@ -70,6 +70,7 @@ Rules:
 - Work step by step: think briefly, take one action, observe the result, then continue. \
 Finish the current thought/step before starting the next; don't over-plan.
 - Keep replies short unless the user asks for detail.
+- When you create or change code, run it (or the tests) to verify, and report the result.
 - File tools operate within the configured workspace root. Use absolute paths when the root is a drive.
 - Use the shell tool for running programs and scripts; keep commands non-destructive unless asked.
 - Use launch_app to open programs, files, or URLs, and the gui_* tools to drive the desktop.
