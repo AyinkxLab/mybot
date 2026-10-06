@@ -145,6 +145,7 @@ COMMAND_LIST = [
     ("/voice", "record and transcribe (optional)"),
     ("/install", "install a plugin (name, path, or URL)"),
     ("/plugins", "list installed + available plugins"),
+    ("/access", "toggle always-allow (skip approval prompts)"),
     ("/enable", "enable a disabled plugin"),
     ("/disable", "disable a plugin"),
     ("/tour", "what mybot can do"),
@@ -176,6 +177,7 @@ HELP = """[b]commands[/]
   /help        show this
   /install     install a plugin (name, path, or URL)
   /plugins     list installed + available plugins
+  /access      toggle always-allow (skip approval prompts)
   /tour        show what mybot can do
   /exit        quit
 
@@ -1467,6 +1469,7 @@ class MybotApp(App):
             "/triggers": "triggers",
             "/voice": "voice",
             "/plugins": "plugins",
+            "/access": "access",
             "/tour": "tour",
             "/reset": "reset",
             "/help": "help",
@@ -1516,6 +1519,8 @@ class MybotApp(App):
             self._note("**Background triggers**\n\n" + list_triggers())
         elif action == "voice":
             self._voice()
+        elif action == "access":
+            self._toggle_access()
         elif action == "tour":
             self._note(TOUR)
         elif action == "sessions":
@@ -1927,6 +1932,20 @@ class MybotApp(App):
             lines += ["", "Load errors:"] + [f"- {item}" for item in errors]
         lines += ["", "Install: `/install <name|path|url>`  ·  toggle: `/enable` `/disable`"]
         self._note("\n".join(lines))
+
+    def _toggle_access(self) -> None:
+        import config as _config
+        import tools as _tools
+
+        new = not _config.REQUIRE_APPROVAL
+        _config.REQUIRE_APPROVAL = new
+        _tools.REQUIRE_APPROVAL = new
+        try:
+            _config.set_env_var("REQUIRE_APPROVAL", "true" if new else "false")
+        except Exception:
+            pass
+        state = "ask before risky actions" if new else "ALWAYS allow (no prompts)"
+        self._note(f"Approval mode: **{state}**.\nSaved to .env so it sticks after restart.")
 
     def action_leader(self) -> None:
         self._leader = True

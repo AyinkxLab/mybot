@@ -48,6 +48,23 @@ try:
 except ValueError:
     MAX_TOOL_ROUNDS = 1000
 
+ENV_PATH = BASE_DIR / ".env"
+
+
+def set_env_var(key: str, value: str) -> None:
+    """Update or append KEY=value in .env (used by the /access toggle)."""
+    lines = []
+    if ENV_PATH.is_file():
+        lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+    prefix = key + "="
+    for index, line in enumerate(lines):
+        if line.strip().startswith(prefix):
+            lines[index] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").strip().lower() not in {"0", "false", "no", "off"}
