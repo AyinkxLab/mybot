@@ -342,18 +342,25 @@ class MessageView(Vertical):
         super().__init__(classes=f"msg {role}")
         self._text = text
         self.role_name = role
+        self._ready = False
 
     def compose(self) -> ComposeResult:
         yield Static(self.role_name, classes="role")
         yield Markdown(self._text, classes="body")
 
+    def on_mount(self) -> None:
+        self._ready = True
+        self.query_one(Markdown).update(self._text or "")
+
     def set_text(self, text: str) -> None:
         self._text = text
-        self.query_one(Markdown).update(text or "")
+        if self._ready:
+            self.query_one(Markdown).update(text or "")
 
     def append(self, chunk: str) -> None:
         self._text += chunk
-        self.query_one(Markdown).update(self._text)
+        if self._ready:
+            self.query_one(Markdown).update(self._text)
 
 
 def _tool_label(name: str, args: str):
@@ -787,6 +794,7 @@ class MybotApp(App):
         self.show_details = False
         self._last_tool = None
         self._last_tool_record = None
+        self._assistant_view = None
         self._thinking = None
         self._thinking_views = []
         self._tool_views = []
@@ -1171,8 +1179,12 @@ class MybotApp(App):
     def _note(self, text: str) -> None:
         if self.view == "home":
             self._set_view("chat")
-        self.query_one("#chat", VerticalScroll).mount(MessageView("mybot", text))
-        self._scroll_end()
+        widget = MessageView("mybot", text)
+        if self.busy and self._assistant_view is not None:
+            self._add_block(widget)
+        else:
+            self.query_one("#chat", VerticalScroll).mount(widget)
+            self._scroll_end()
 
     def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         text = event.value.strip()
@@ -1205,6 +1217,7 @@ class MybotApp(App):
             return
         assistant = MessageView("mybot", "")
         chat.mount(assistant)
+        self._assistant_view = assistant
         self._scroll_end()
         self.busy = True
         self._cancel.clear()
@@ -1215,7 +1228,7 @@ class MybotApp(App):
         if LLM_MODEL_FAST and len(text) < 60 and "\n" not in text and "`" not in text:
             model_override = LLM_MODEL_FAST
         enriched, images = self._expand_refs(text)
-        self._run_agent(enriched, assistant, model_override, images)
+        self._run_agent(enriched, model_override, images)
 
     def _expand_refs(self, text: str):
         blocks = []
@@ -1463,19 +1476,49 @@ class MybotApp(App):
             Chooser("select agent mode", [(m, m) for m in MODES]), done
         )
 
+    def _add_block(self, widget) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        if self._assistant_view is None:
+            chat.mount(widget)
+        else:
+            if self._assistant_view._text:
+                self._assistant_view = MessageView("mybot", "")
+                chat.mount(self._assistant_view)
+            chat.mount(widget, before=self._assistant_view)
+        self._scroll_end()
+
+    def _append_delta(self, chunk: str) -> None:
+        view = self._assistant_view
+        if view is None:
+            view = MessageView("mybot", "")
+            self.query_one("#chat", VerticalScroll).mount(view)
+            self._assistant_view = view
+        view.append(chunk)
+        self._scroll_end()
+
+    def _set_assistant_error(self, text: str) -> None:
+        view = self._assistant_view
+        if view is None:
+            view = MessageView("mybot", "")
+            self.query_one("#chat", VerticalScroll).mount(view)
+            self._assistant_view = view
+        view.set_text(text)
+        self._scroll_end()
+
     @work(thread=True)
-    def _run_agent(
-        self, text: str, assistant: MessageView, model: str = None, images: list = None
-    ) -> None:
+    def _run_agent(self, text: str, model: str = None, images: list = None) -> None:
         if self.agent is None:
-            self.call_from_thread(assistant.set_text, "Not connected - type /connect first.")
+            self.call_from_thread(
+                self._set_assistant_error, "Not connected - type /connect first."
+            )
             self.call_from_thread(self._finish)
             return
         start = time.monotonic()
         try:
             for event in self.agent.respond_stream(text, model, images):
                 if self._cancel.is_set():
-                    self.call_from_thread(assistant.append, "\n\n_\\[cancelled]_")
+                    if self._assistant_view is not None:
+                        self.call_from_thread(self._assistant_view.append, "\n\n_[cancelled]_")
                     break
                 kind = event["type"]
                 if kind == "notice":
@@ -1485,7 +1528,7 @@ class MybotApp(App):
                     self.call_from_thread(self._add_reasoning, event["text"])
                 elif kind == "delta":
                     self.call_from_thread(self._stop_spinner)
-                    self.call_from_thread(assistant.append, event["text"])
+                    self.call_from_thread(self._append_delta, event["text"])
                 elif kind == "tool":
                     self.call_from_thread(self._stop_spinner)
                     self.call_from_thread(self._add_tool, event["name"], event["args"])
@@ -1499,19 +1542,25 @@ class MybotApp(App):
                     )
                 elif kind == "final":
                     self.call_from_thread(
-                        self._finalize,
-                        assistant,
-                        event["text"] or assistant._text,
-                        time.monotonic() - start,
+                        self._finalize, event["text"], time.monotonic() - start
                     )
         except Exception as exc:
-            self.call_from_thread(assistant.set_text, f"error: {exc}")
+            self.call_from_thread(self._set_assistant_error, f"error: {exc}")
         finally:
             self.call_from_thread(self._finish)
 
-    def _finalize(self, assistant: MessageView, text: str, elapsed: float) -> None:
-        assistant.set_text(text)
-        self._record({"role": "mybot", "text": text})
+    def _finalize(self, text: str, elapsed: float) -> None:
+        view = self._assistant_view
+        if view is not None and text:
+            view.set_text(text)
+        final_text = view._text if view is not None else text
+        if view is not None and not view._text:
+            try:
+                view.remove()
+            except Exception:
+                pass
+            self._assistant_view = None
+        self._record({"role": "mybot", "text": final_text})
         meta = Text()
         meta.append("▪ ", style=ACCENT_SOFT)
         meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
@@ -1520,6 +1569,7 @@ class MybotApp(App):
         meta.append(f" · {elapsed:.1f}s", style="#6b7280")
         self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
         self._record({"kind": "meta", "text": meta.plain})
+        self._assistant_view = None
         self._scroll_end()
 
     def _add_usage(self, tokens_in: int, tokens_out: int) -> None:
@@ -1532,18 +1582,19 @@ class MybotApp(App):
         if self._thinking is None:
             self._thinking = ThinkingView(expanded=self.show_thinking)
             self._thinking_views.append(self._thinking)
-            self.query_one("#chat", VerticalScroll).mount(self._thinking)
+            self._add_block(self._thinking)
         self._thinking.append(chunk)
         self._scroll_end()
 
     def _add_tool(self, name: str, args: str) -> None:
+        self._thinking = None
         view = ToolView(name, args, detailed=self.show_details)
         record = {"kind": "tool", "name": name, "args": args, "result": ""}
         self._record(record)
         self._last_tool = view
         self._last_tool_record = record
         self._tool_views.append(view)
-        self.query_one("#chat", VerticalScroll).mount(view)
+        self._add_block(view)
         self._scroll_end()
 
     def _tool_result(self, result: str) -> None:
@@ -1569,12 +1620,13 @@ class MybotApp(App):
             self._last_tool_record["result"] = result
 
     def _mount_tool(self, view: ToolView) -> None:
+        self._thinking = None
         record = {"kind": "tool", "name": view.tool_name, "args": view.tool_args, "result": ""}
         self._record(record)
         self._last_tool = view
         self._last_tool_record = record
         self._tool_views.append(view)
-        self.query_one("#chat", VerticalScroll).mount(view)
+        self._add_block(view)
         self._scroll_end()
 
     def _bash_context(self, command: str, result: str) -> None:
