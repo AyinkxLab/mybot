@@ -41,6 +41,13 @@ try:
 except ValueError:
     MAX_SESSION_COST = 0.0
 
+# Max tool-call rounds per user turn before the agent yields. Generous so long
+# autonomous tasks (like opencode) run to completion; lower it to cap runaway loops.
+try:
+    MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "1000"))
+except ValueError:
+    MAX_TOOL_ROUNDS = 1000
+
 WORKSPACE = _resolve_workspace(os.getenv("BOT_WORKSPACE", "workspace"))
 ALLOW_SHELL = os.getenv("ALLOW_SHELL", "true").strip().lower() not in {"0", "false", "no", "off"}
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").strip().lower() not in {"0", "false", "no", "off"}

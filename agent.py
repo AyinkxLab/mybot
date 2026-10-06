@@ -11,11 +11,10 @@ from config import (
     LLM_FALLBACK_BASE_URL,
     LLM_FALLBACK_MODEL,
     LLM_MODEL,
+    MAX_TOOL_ROUNDS,
     SYSTEM_PROMPT,
 )
 from tools import all_tool_specs, execute_tool
-
-MAX_TOOL_ROUNDS = 12
 
 
 class Agent:
@@ -229,4 +228,7 @@ class Agent:
                     )
 
         self._trim()
-        yield {"type": "final", "text": "Stopped: reached the tool-call limit for one turn."}
+        yield {
+            "type": "final",
+            "text": f"Stopped after {MAX_TOOL_ROUNDS} tool rounds. Raise MAX_TOOL_ROUNDS to run longer.",
+        }
