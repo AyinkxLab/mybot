@@ -149,6 +149,24 @@ def register(api):
 - `/plugins` lists what loaded. See `plugins/example.py`. Plugins run with full app
   privileges — only install ones you trust.
 
+### Installing plugins
+
+From the TUI:
+```
+/install <path-or-url>     # copies/downloads a .py into plugins/ and validates it
+/plugins                   # list enabled + disabled
+/enable <name>  /disable <name>   # toggle without deleting
+```
+
+From a terminal (the `mybot-plugin` launcher is on your PATH):
+```
+mybot-plugin install https://raw.githubusercontent.com/<user>/<repo>/main/myplugin.py
+mybot-plugin install .\myplugin.py
+mybot-plugin list
+```
+The installer refuses files without a top-level `register(api)`. There's no central
+registry yet — point it at any raw `.py` URL or local file.
+
 ## Triggers (background automation)
 
 While `mybot` is running, a small daemon checks background triggers every 2s and runs their
