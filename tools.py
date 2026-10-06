@@ -414,6 +414,42 @@ def remember(text: str) -> str:
     return add_note(text)
 
 
+def add_trigger(kind: str, target: str = "", command: str = "", seconds: int = 0) -> str:
+    from triggers import add_trigger as _add
+
+    kind = (kind or "").strip().lower()
+    if kind not in {"watch", "interval"}:
+        return "ERROR: kind must be 'watch' or 'interval'"
+    if not command:
+        return "ERROR: command is required"
+    if kind == "watch" and not target:
+        return "ERROR: watch requires a target path"
+    if kind == "interval" and int(seconds or 0) <= 0:
+        return "ERROR: interval requires seconds > 0"
+    trigger = _add(kind, target, command, seconds)
+    where = target if kind == "watch" else f"every {seconds}s"
+    return f"Added trigger {trigger['id']}: {kind} ({where}) -> {command}"
+
+
+def list_triggers() -> str:
+    from triggers import load_triggers
+
+    triggers = load_triggers()
+    if not triggers:
+        return "(no triggers)"
+    lines = []
+    for t in triggers:
+        where = t.get("target") if t.get("kind") == "watch" else f"{t.get('seconds')}s"
+        lines.append(f"{t['id']} [{t['kind']}] {where} -> {t.get('command', '')}")
+    return "\n".join(lines)
+
+
+def remove_trigger(trigger_id: str) -> str:
+    from triggers import remove_trigger as _remove
+
+    return f"Removed {_remove(trigger_id)} trigger(s)."
+
+
 def recall(query: str = "") -> str:
     from memory import format_notes, search_notes
 
@@ -681,6 +717,46 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_trigger",
+            "description": (
+                "Create a background trigger: kind 'interval' runs the command every "
+                "`seconds`; kind 'watch' runs it whenever `target` (a file/folder) changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["watch", "interval"]},
+                    "target": {"type": "string", "description": "Path to watch"},
+                    "command": {"type": "string", "description": "Shell command to run"},
+                    "seconds": {"type": "integer", "description": "Interval seconds"},
+                },
+                "required": ["kind", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_triggers",
+            "description": "List the configured background triggers.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_trigger",
+            "description": "Remove a background trigger by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"trigger_id": {"type": "string"}},
+                "required": ["trigger_id"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -701,6 +777,9 @@ _DISPATCH = {
     "todo_write": todo_write,
     "remember": remember,
     "recall": recall,
+    "add_trigger": add_trigger,
+    "list_triggers": list_triggers,
+    "remove_trigger": remove_trigger,
 }
 
 

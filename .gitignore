@@ -3,6 +3,7 @@
 .mybot_config.json
 .mybot_memory.json
 .mybot_sessions.json
+.mybot_triggers.json
 
 # Python
 __pycache__/
