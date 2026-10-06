@@ -21,6 +21,7 @@ from auth import (
     is_configured,
     list_models,
     load_auth,
+    model_label,
     save_auth,
 )
 from config import REQUIRE_APPROVAL, SYSTEM_PROMPT, WORKSPACE
@@ -553,7 +554,7 @@ class ConnectScreen(ModalScreen):
             yield Static("model", classes="field-label")
             with Horizontal(id="model-row"):
                 yield Select(
-                    [(m, m) for m in PROVIDERS["deepseek"]["models"]],
+                    [(model_label(m), m) for m in PROVIDERS["deepseek"]["models"]],
                     value=PROVIDERS["deepseek"]["models"][0],
                     allow_blank=False,
                     id="model",
@@ -570,7 +571,7 @@ class ConnectScreen(ModalScreen):
         self.query_one("#base_url", Input).value = preset.get("base_url", "")
         models = preset.get("models", [])
         select = self.query_one("#model", Select)
-        select.set_options([(m, m) for m in models])
+        select.set_options([(model_label(m), m) for m in models])
         if models:
             select.value = models[0]
 
@@ -586,7 +587,7 @@ class ConnectScreen(ModalScreen):
             models = list_models(url, key)
             if models:
                 select = self.query_one("#model", Select)
-                select.set_options([(m, m) for m in models])
+                select.set_options([(model_label(m), m) for m in models])
                 select.value = models[0]
         elif button == "save":
             key = self.query_one("#key", Input).value.strip()
@@ -901,7 +902,7 @@ class MybotApp(App):
         return SYSTEM_PROMPT + MODES.get(self.mode, "")
 
     def _refresh_status(self) -> None:
-        model = self.agent.model if self.agent else "not connected"
+        model = model_label(self.agent.model) if self.agent else "not connected"
         provider = load_auth().get("provider", "")
         left = Text()
         left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
@@ -970,7 +971,7 @@ class MybotApp(App):
             meta.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
             meta.append(" auto ", style=MUTED)
             meta.append("· ", style=MUTED)
-            meta.append(self.agent.model, style=TEXT_COLOR)
+            meta.append(model_label(self.agent.model), style=TEXT_COLOR)
             if provider:
                 meta.append(f"  {provider}", style=MUTED)
         else:
@@ -1155,7 +1156,8 @@ class MybotApp(App):
             self._refresh_home_meta()
             self._note(f"Model set to {choice}")
 
-        self.push_screen(Chooser("select model", [(m, m) for m in models]), done)
+        options = [(f"{model_label(m)}  ·  {m}", m) for m in models]
+        self.push_screen(Chooser("select model", options), done)
 
     def _choose_theme(self) -> None:
         names = sorted({*self.available_themes.keys()})
