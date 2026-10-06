@@ -121,19 +121,19 @@ BANNER = [
     "██║ ╚═╝ ██║   ██║   ██████╔╝╚██████╔╝   ██║   ",
     "╚═╝     ╚═╝   ╚═╝   ╚═════╝  ╚═════╝    ╚═╝   ",
 ]
-ACCENT = "#4c8bf5"
-ACCENT_SOFT = "#6ba3ff"
+ACCENT = "#5c9cf5"
+ACCENT_SOFT = "#5c9cf5"
 VERSION = "mybot 0.1.0"
 HOME_PLACEHOLDER = 'Ask anything...  "What is the tech stack of this project?"'
 
 
 def _logo() -> Text:
-    light, dark = "#e8e8e8", "#8a8a8a"
+    muted, bright = "#808080", "#eeeeee"
     text = Text(justify="center")
     for line in BANNER:
         half = len(line) // 2
-        text.append(line[:half], style=f"bold {light}")
-        text.append(line[half:], style=f"bold {dark}")
+        text.append(line[:half], style=f"bold {muted}")
+        text.append(line[half:], style=f"bold {bright}")
         text.append("\n")
     return text
 
@@ -431,19 +431,20 @@ class MybotApp(App):
     #status-left { width: 1fr; }
     #status-right { width: auto; text-align: right; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
-    .msg.you { border-left: thick $primary; }
+    .msg.you { border-left: thick #5c9cf5; }
     .msg.mybot { border-left: none; }
-    .role { height: 1; text-style: bold; color: $text-muted; }
-    .msg.you .role { color: $primary; }
-    .msg.mybot .role { color: $text-muted; }
-    Markdown { color: $foreground; link-color: $primary; link-style: underline; }
-    MarkdownH1, MarkdownH2, MarkdownH3 { color: $primary; text-style: bold; }
-    MarkdownH4, MarkdownH5, MarkdownH6 { color: $accent; text-style: bold; }
-    MarkdownBlockQuote { color: $text-muted; }
-    MarkdownBullet { color: $primary; }
-    MarkdownBlock > .code_inline { color: $accent; background: $surface; }
-    MarkdownFence { background: $surface; color: $foreground; }
-    MarkdownTableContent > .markdown-table--header { color: $primary; text-style: bold; }
+    .role { height: 1; text-style: bold; color: #808080; }
+    .msg.you .role { color: #5c9cf5; }
+    .msg.mybot .role { color: #808080; }
+    Markdown { color: #eeeeee; link-color: #fab283; link-style: underline; }
+    MarkdownH1, MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 { color: #9d7cd8; text-style: bold; }
+    MarkdownBlockQuote { color: #e5c07b; }
+    MarkdownBullet { color: #fab283; }
+    MarkdownBlock > .em { color: #e5c07b; text-style: italic; }
+    MarkdownBlock > .strong { color: #f5a742; text-style: bold; }
+    MarkdownBlock > .code_inline { color: #7fd88f; background: #1e1e1e; }
+    MarkdownFence { background: #141414; color: #eeeeee; }
+    MarkdownTableContent > .markdown-table--header { color: #fab283; text-style: bold; }
     .tool { color: $warning; padding: 0 0 0 2; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; border-left: thick #4b5563; }
     .think-head { color: #6b7280; height: 1; }
@@ -463,8 +464,8 @@ class MybotApp(App):
     #connect-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
     #home { height: 1fr; align: center middle; }
     #logo { width: 72; text-align: center; height: auto; }
-    #home-input { width: 72; border: solid $surface; border-left: thick $primary; background: $panel; color: $foreground; }
-    #home-input:focus { border: solid $primary; border-left: thick $primary; }
+    #home-input { width: 72; border: solid $surface; border-left: thick $secondary; background: $panel; color: $foreground; }
+    #home-input:focus { border: solid $secondary; border-left: thick $secondary; }
     #home-input .input--placeholder, #prompt .input--placeholder { color: #6b7280; }
     #home-meta { width: 72; text-align: center; margin: 1 0 0 0; height: auto; }
     #home-hint { width: 72; text-align: center; color: $text-muted; margin: 1 0 0 0; height: auto; }
@@ -558,15 +559,16 @@ class MybotApp(App):
         self.register_theme(
             Theme(
                 "opencode",
-                primary="#4c8bf5",
-                secondary="#7dcfff",
-                accent="#6ba3ff",
+                primary="#fab283",
+                secondary="#5c9cf5",
+                accent="#9d7cd8",
+                foreground="#eeeeee",
                 background="#0a0a0a",
                 surface="#141414",
-                panel="#141414",
-                success="#4ade80",
-                warning="#fbbf24",
-                error="#f87171",
+                panel="#1e1e1e",
+                success="#7fd88f",
+                warning="#f5a742",
+                error="#e06c75",
                 dark=True,
             )
         )
