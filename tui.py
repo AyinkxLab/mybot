@@ -1140,40 +1140,40 @@ class MybotApp(App):
     def _refresh_status(self) -> None:
         model = model_label(self.agent.model) if self.agent else "not connected"
         provider = load_auth().get("provider", "")
+
         left = Text()
-        if self._working:
-            left.append(WORK_FRAMES[self._work_i % len(WORK_FRAMES)] + " ", style=ACCENT_SOFT)
-            left.append("working", style=TEXT_COLOR)
-            left.append("  ·  esc to interrupt", style=MUTED)
-        else:
-            left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
-            left.append(" auto ", style=MUTED)
-            left.append("· ", style=MUTED)
-            left.append(model, style=TEXT_COLOR)
-            if provider:
-                left.append(f"  {provider}", style=MUTED)
+        left.append(self.mode.capitalize(), style=f"bold {ACCENT_SOFT}")
+        left.append(" auto ", style=MUTED)
+        left.append("· ", style=MUTED)
+        left.append(model, style=TEXT_COLOR)
+        if provider:
+            left.append(f"  {provider}", style=MUTED)
         self.query_one("#status-left", Static).update(left)
 
+        self.query_one("#status-right", Static).update(Text(str(WORKSPACE), style=MUTED))
+
         cost = self._cost()
-        right = Text()
+        footer_left = Text()
+        if self._working:
+            footer_left.append(WORK_FRAMES[self._work_i % len(WORK_FRAMES)] + " ", style=ACCENT_SOFT)
+            footer_left.append("working", style=TEXT_COLOR)
+            footer_left.append("  ·  esc to interrupt", style=MUTED)
+        else:
+            footer_left.append("● ", style=MUTED)
+            footer_left.append("0 LSP", style=TEXT_COLOR)
+            footer_left.append("   /status", style=MUTED)
+        self.query_one("#footer-left", Static).update(footer_left)
+
+        footer = Text()
         if self.context_tokens:
-            right.append(
+            footer.append(
                 f"{self.context_tokens:,} ({self._context_percent():.0f}%)", style=MUTED
             )
             if cost is not None:
-                right.append(f"   ${cost:.4f}", style=MUTED)
-        else:
-            right.append("tab", style=TEXT_COLOR)
-            right.append(" agents      ", style=MUTED)
-            right.append("ctrl+p", style=TEXT_COLOR)
-            right.append(" commands", style=MUTED)
-        self.query_one("#status-right", Static).update(right)
-
-        self.query_one("#footer-left", Static).update(Text(str(WORKSPACE), style=MUTED))
-        footer = Text()
-        footer.append("● ", style=MUTED)
-        footer.append("0 LSP", style=TEXT_COLOR)
-        footer.append("   /status", style=MUTED)
+                footer.append(f"   ${cost:.4f}", style=MUTED)
+            footer.append("   ", style=MUTED)
+        footer.append("ctrl+p", style=TEXT_COLOR)
+        footer.append(" commands", style=MUTED)
         self.query_one("#footer-right", Static).update(footer)
 
         sidebar = self.query_one(Sidebar)
