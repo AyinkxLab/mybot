@@ -3,6 +3,7 @@ import json
 import mimetypes
 import random
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -129,6 +130,14 @@ COMMANDS = [
     ("new session", "new"),
     ("clear history", "reset"),
     ("help", "help"),
+    ("copy last reply", "copy"),
+    ("rename session", "rename"),
+    ("delete session", "delete"),
+    ("pin session", "pin"),
+    ("stash prompt", "stash"),
+    ("restore stashed prompt", "stash_pop"),
+    ("toggle timestamps", "timestamps"),
+    ("toggle sidebar", "sidebar"),
     ("quit", "quit"),
 ]
 
@@ -409,6 +418,7 @@ class Session:
         self.tokens_in = 0
         self.tokens_out = 0
         self.context_tokens = 0
+        self.pinned = False
 
 
 class MessageView(Vertical):
@@ -718,21 +728,90 @@ class Chooser(ModalScreen):
     def __init__(self, title: str, options: list) -> None:
         super().__init__()
         self.title = title
-        self.options = options
+        self.options = list(options)
+        self._shown: list = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="palette"):
             with Horizontal(id="palette-head"):
                 yield Static(self.title, id="palette-title")
                 yield Static("esc", id="palette-esc")
-            yield OptionList(
-                *(Option(label, id=str(index)) for index, (label, _) in enumerate(self.options)),
-                id="palette-list",
-            )
+            yield Input(placeholder="Search", id="palette-filter")
+            yield OptionList(id="palette-list")
+
+    def on_mount(self) -> None:
+        self._refresh_list("")
+        self.query_one("#palette-filter", Input).focus()
+
+    def _refresh_list(self, query: str) -> None:
+        option_list = self.query_one("#palette-list", OptionList)
+        option_list.clear_options()
+        needle = (query or "").strip().lower()
+        self._shown = [
+            (label, value)
+            for label, value in self.options
+            if not needle or needle in str(label).lower()
+        ]
+        for index, (label, _) in enumerate(self._shown):
+            option_list.add_option(Option(str(label), id=str(index)))
+        if self._shown:
+            option_list.highlighted = 0
+
+    def _move(self, step: int) -> None:
+        option_list = self.query_one("#palette-list", OptionList)
+        if not self._shown:
+            return
+        current = option_list.highlighted or 0
+        option_list.highlighted = (current + step) % len(self._shown)
+
+    def _pick(self) -> None:
+        option_list = self.query_one("#palette-list", OptionList)
+        index = option_list.highlighted
+        if index is not None and 0 <= index < len(self._shown):
+            self.dismiss(self._shown[index][1])
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._refresh_list(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._pick()
+
+    def on_key(self, event) -> None:
+        if event.key in ("up", "down"):
+            self._move(-1 if event.key == "up" else 1)
+            event.stop()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        self.dismiss(self.options[int(event.option.id)][1])
+        index = int(event.option.id)
+        if 0 <= index < len(self._shown):
+            self.dismiss(self._shown[index][1])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class PromptScreen(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, title: str, value: str = "", placeholder: str = "") -> None:
+        super().__init__()
+        self.title = title
+        self.value = value
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette"):
+            with Horizontal(id="palette-head"):
+                yield Static(self.title, id="palette-title")
+                yield Static("esc", id="palette-esc")
+            yield Input(value=self.value, placeholder=self.placeholder, id="prompt-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#prompt-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -897,6 +976,8 @@ class MybotApp(App):
     #palette-title { width: 1fr; text-style: bold; color: $foreground; }
     #palette-esc { width: auto; color: $text-muted; }
     #palette-head { height: 1; margin: 0 0 1 0; }
+    #palette-filter { background: $surface; border: none; padding: 0; }
+    #palette-filter:focus { border: none; }
     OptionList { background: $surface; border: none; }
     OptionList > .option-list--option-highlighted { background: $primary; color: #0a0a0a; text-style: bold; }
     """
@@ -905,6 +986,8 @@ class MybotApp(App):
         Binding("ctrl+c", "quit", "quit"),
         Binding("ctrl+q", "quit", "quit", show=False),
         Binding("ctrl+d", "quit", "quit", show=False),
+        Binding("f2", "model_next", "model", show=False),
+        Binding("shift+f2", "model_prev", "model", show=False),
         Binding("tab", "mode", "mode"),
         Binding("shift+tab", "mode_reverse", "mode", show=False),
         Binding("f1", "show_help", "help", show=False),
@@ -961,6 +1044,9 @@ class MybotApp(App):
         self._redo_stack = []
         self._auto_compacted = False
         self._last_esc = 0.0
+        self._stash = ""
+        self._models_cache = None
+        self.show_timestamps = True
 
     def _session(self) -> Session:
         return self.sessions[self.index]
@@ -1056,6 +1142,7 @@ class MybotApp(App):
             session.tokens_in = data.get("tokens_in", 0)
             session.tokens_out = data.get("tokens_out", 0)
             session.context_tokens = data.get("context_tokens", 0)
+            session.pinned = data.get("pinned", False)
             sessions.append(session)
         # Always start fresh; previous sessions stay available via /sessions.
         if not sessions or sessions[-1].records:
@@ -1083,6 +1170,7 @@ class MybotApp(App):
                     "tokens_out": session.tokens_out,
                     "context_tokens": session.context_tokens,
                     "messages": session.agent.messages if session.agent else None,
+                    "pinned": session.pinned,
                 }
             )
         return out
@@ -1643,6 +1731,22 @@ class MybotApp(App):
             self.action_redo()
         elif action == "help":
             self._note(HELP)
+        elif action == "copy":
+            self._copy_last_message()
+        elif action == "sidebar":
+            self.action_toggle_todos()
+        elif action == "pin":
+            self._pin_session()
+        elif action == "rename":
+            self._rename_session()
+        elif action == "delete":
+            self._delete_session()
+        elif action == "stash":
+            self._stash_prompt()
+        elif action == "stash_pop":
+            self._pop_stash()
+        elif action == "timestamps":
+            self._toggle_timestamps()
         elif action == "quit":
             self.exit()
 
@@ -1806,7 +1910,8 @@ class MybotApp(App):
         meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
         meta.append(" · ", style="#4b5563")
         meta.append(model_label(self.agent.model) if self.agent else "", style="#9ca3af")
-        meta.append(f" · {_fmt_elapsed(elapsed)}", style="#6b7280")
+        if self.show_timestamps:
+            meta.append(f" · {_fmt_elapsed(elapsed)}", style="#6b7280")
         self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
         self._record({"kind": "meta", "text": meta.plain})
         self._assistant_view = None
@@ -2078,7 +2183,8 @@ class MybotApp(App):
     def action_leader(self) -> None:
         self._leader = True
         self._note(
-            "leader: n new · l sessions · u undo · r redo · t theme · m models · c compact · x export · q quit"
+            "leader: n new · l sessions · 1-9 quick-switch · u undo · r redo · y copy · "
+            "m models · t theme · c compact · x export · p pin · b sidebar · s status · q quit"
         )
 
     def on_key(self, event) -> None:
@@ -2086,6 +2192,11 @@ class MybotApp(App):
             return
         self._leader = False
         event.stop()
+        if event.key in "123456789":
+            index = int(event.key) - 1
+            if 0 <= index < len(self.sessions):
+                self._select_session(index)
+            return
         action = {
             "n": "new",
             "q": "quit",
@@ -2096,6 +2207,11 @@ class MybotApp(App):
             "l": "sessions",
             "u": "undo",
             "r": "redo",
+            "y": "copy",
+            "b": "sidebar",
+            "h": "help",
+            "s": "status",
+            "p": "pin",
         }.get(event.key)
         if action:
             self._run_command(action)
@@ -2198,7 +2314,12 @@ class MybotApp(App):
 
     def _sessions_command(self) -> None:
         options = [
-            (f"{i + 1}. {session.title}", str(i)) for i, session in enumerate(self.sessions)
+            (
+                f"{'★ ' if getattr(session, 'pinned', False) else ''}{i + 1}. {session.title}"
+                + ("   (current)" if i == self.index else ""),
+                str(i),
+            )
+            for i, session in enumerate(self.sessions)
         ]
 
         def done(choice) -> None:
@@ -2206,6 +2327,112 @@ class MybotApp(App):
                 self._select_session(int(choice))
 
         self.push_screen(Chooser("sessions", options), done)
+
+    def _rename_session(self) -> None:
+        session = self._session()
+
+        def done(value) -> None:
+            if value:
+                session.title = value
+                self.title = value
+                self.query_one(Sidebar).set_title(value)
+                self._persist()
+                self._note("Session renamed.")
+
+        self.push_screen(PromptScreen("rename session", session.title), done)
+
+    def _delete_session(self) -> None:
+        if len(self.sessions) <= 1:
+            self._note("Can't delete the only session.")
+            return
+        del self.sessions[self.index]
+        self.index = min(self.index, len(self.sessions) - 1)
+        self._undo_stack = []
+        self._redo_stack = []
+        self._select_session(self.index)
+        self._note("Session deleted.")
+
+    def _pin_session(self) -> None:
+        session = self._session()
+        session.pinned = not getattr(session, "pinned", False)
+        self._persist()
+        self._note("Session pinned." if session.pinned else "Session unpinned.")
+        self._sessions_command()
+
+    def _copy_last_message(self) -> None:
+        text = ""
+        for record in reversed(self._session().records):
+            if record.get("role") in ("mybot", "assistant"):
+                text = record.get("text", "")
+                break
+        if not text:
+            self._note("Nothing to copy.")
+            return
+        try:
+            subprocess.run("clip", input=text, text=True, shell=True, check=False)
+            self._note("Copied the last reply to the clipboard.")
+        except Exception as exc:
+            self._note(f"Copy failed: {exc}")
+
+    def _cycle_model(self, step: int) -> None:
+        auth = load_auth()
+        if not auth.get("api_key"):
+            self._note("Connect first with /connect.")
+            return
+        if not self._models_cache:
+            self._models_cache = list_models(auth.get("base_url", ""), auth["api_key"]) or list(
+                PROVIDERS.get(auth.get("provider", ""), {}).get("models", [])
+            )
+        models = self._models_cache
+        if not models:
+            self._note("No models found.")
+            return
+        current = auth.get("model") or (self.agent.model if self.agent else "")
+        index = models.index(current) if current in models else -1
+        new = models[(index + step) % len(models)]
+        auth["model"] = new
+        save_auth(auth)
+        try:
+            self.agent = Agent(system_prompt=self._system_prompt())
+        except Exception as exc:
+            self._note(f"error: {exc}")
+            return
+        self._refresh_status()
+        self._refresh_home_meta()
+        self._note(f"Model: {model_label(new)}")
+
+    def action_model_next(self) -> None:
+        self._cycle_model(1)
+
+    def action_model_prev(self) -> None:
+        self._cycle_model(-1)
+
+    def _stash_prompt(self) -> None:
+        try:
+            area = self.query_one("#prompt" if self.view == "chat" else "#home-input", PromptArea)
+        except Exception:
+            return
+        if not area.text.strip():
+            self._note("Nothing to stash.")
+            return
+        self._stash = area.text
+        area.load_text("")
+        self._note("Prompt stashed (restore with /stash-pop).")
+
+    def _pop_stash(self) -> None:
+        if not self._stash:
+            self._note("No stashed prompt.")
+            return
+        try:
+            area = self.query_one("#prompt" if self.view == "chat" else "#home-input", PromptArea)
+            area.load_text(self._stash)
+        except Exception:
+            return
+        self._note("Stashed prompt restored.")
+
+    def _toggle_timestamps(self) -> None:
+        self.show_timestamps = not self.show_timestamps
+        self._note(f"Timestamps: {'on' if self.show_timestamps else 'off'} (new replies)")
 
     def _select_session(self, index: int) -> None:
         current = self._session()
