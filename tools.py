@@ -16,11 +16,13 @@ from config import (
     ALLOW_SHELL,
     GITHUB_API,
     GITHUB_TOKEN,
+    MAX_TOOL_OUTPUT,
     REQUIRE_APPROVAL,
+    SHELL_TIMEOUT,
     WORKSPACE,
 )
 
-MAX_OUTPUT = 8000
+MAX_OUTPUT = MAX_TOOL_OUTPUT
 
 _approval_handler = None
 
@@ -207,11 +209,11 @@ def run_shell(command: str) -> str:
             cwd=str(WORKSPACE),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=SHELL_TIMEOUT,
             env=_shell_env(),
         )
     except subprocess.TimeoutExpired:
-        return "ERROR: command timed out after 120s"
+        return f"ERROR: command timed out after {SHELL_TIMEOUT}s (raise SHELL_TIMEOUT in .env)"
     except Exception as exc:
         return f"ERROR: {exc}"
     output = (result.stdout or "") + (result.stderr or "")

@@ -5,20 +5,49 @@ from openai import OpenAI
 
 from auth import list_models, load_auth
 from config import (
+    CORE_TOOLS,
+    ESCALATE_COMPLEX,
+    ESCALATE_KEYWORDS,
+    HISTORY_LIMIT,
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_FALLBACK_API_KEY,
     LLM_FALLBACK_BASE_URL,
     LLM_FALLBACK_MODEL,
+    LLM_MAX_TOKENS,
     LLM_MODEL,
     MAX_TOOL_ROUNDS,
     SYSTEM_PROMPT,
+    TOOLSET_MODE,
 )
 from tools import all_tool_specs, execute_tool
 
+# When a request contains one of these, we override the default "minimum work"
+# behaviour and tell the model to be exhaustive for that turn.
+THOROUGH_HINTS = (
+    "don't skip",
+    "dont skip",
+    "do not skip",
+    "be thorough",
+    "thoroughly",
+    "exhaustive",
+    "check everything",
+    "cover all",
+    "no shortcuts",
+    "leave nothing",
+    "full audit",
+    "everything relevant",
+    "deep dive",
+)
+
+_THOROUGH_NUDGE = (
+    "\n\n[Be exhaustive for this task: check everything relevant, don't skip any step, "
+    "and verify thoroughly.]"
+)
+
 
 class Agent:
-    def __init__(self, system_prompt: str = SYSTEM_PROMPT, history_limit: int = 40):
+    def __init__(self, system_prompt: str = SYSTEM_PROMPT, history_limit: int = HISTORY_LIMIT):
         auth = load_auth()
         api_key = auth.get("api_key") or LLM_API_KEY
         self.base_url = auth.get("base_url") or LLM_BASE_URL
@@ -97,13 +126,18 @@ class Agent:
         return self.fallback_client, self.fallback_model
 
     def _open_stream(self, client, model):
+        tools = all_tool_specs()
+        if TOOLSET_MODE == "core":
+            tools = [spec for spec in tools if spec["function"]["name"] in CORE_TOOLS]
         request = {
             "model": model,
             "messages": self.messages,
-            "tools": all_tool_specs(),
+            "tools": tools,
             "tool_choice": "auto",
             "stream": True,
         }
+        if LLM_MAX_TOKENS > 0:
+            request["max_tokens"] = LLM_MAX_TOKENS
         try:
             return client.chat.completions.create(
                 **request, stream_options={"include_usage": True}
@@ -111,17 +145,51 @@ class Agent:
         except Exception:
             return client.chat.completions.create(**request)
 
+    def _should_escalate(self, text: str) -> bool:
+        if not ESCALATE_COMPLEX:
+            return False
+        if len(text) > 700 or "```" in text:
+            return True
+        lowered = text.lower()
+        return any(keyword in lowered for keyword in ESCALATE_KEYWORDS)
+
     def respond_stream(self, user_text: str, model: str = None, images: list = None):
+        if any(hint in user_text.lower() for hint in THOROUGH_HINTS):
+            user_text = user_text + _THOROUGH_NUDGE
         content = user_text
         if images:
             content = [{"type": "text", "text": user_text}]
             for image in images:
                 content.append({"type": "image_url", "image_url": {"url": image}})
         self.messages.append({"role": "user", "content": content})
-        active_client = self.client
-        active_model = model or self.model
-        fallback_used = False
+        turn_start = len(self.messages)
 
+        primary = (self.client, model or self.model)
+        fb_client, fb_model = self._fallback()
+        backup = (fb_client, fb_model) if fb_client is not None else None
+
+        if model is not None or backup is None:
+            routes = [primary]
+        elif self._should_escalate(user_text):
+            routes = [backup, primary]
+        else:
+            routes = [primary, backup]
+
+        for index, (active_client, active_model) in enumerate(routes):
+            try:
+                yield from self._run_turn(active_client, active_model)
+                return
+            except Exception as exc:
+                if index == len(routes) - 1:
+                    raise
+                del self.messages[turn_start:]
+                nxt = routes[index + 1][1]
+                yield {
+                    "type": "notice",
+                    "text": f"{active_model} failed ({type(exc).__name__}); escalating to {nxt}",
+                }
+
+    def _run_turn(self, active_client, active_model):
         for _ in range(MAX_TOOL_ROUNDS):
             content_parts = []
             tool_calls = {}
@@ -131,19 +199,6 @@ class Agent:
             except StopIteration:
                 head = []
                 iterator = iter(())
-            except Exception as exc:
-                fb_client, fb_model = self._fallback()
-                if fb_client is not None and not fallback_used:
-                    fallback_used = True
-                    active_client, active_model = fb_client, fb_model
-                    yield {
-                        "type": "notice",
-                        "text": f"primary model failed ({type(exc).__name__}); using local {active_model}",
-                    }
-                    iterator = iter(self._open_stream(active_client, active_model))
-                    head = [next(iterator)]
-                else:
-                    raise
             for chunk in chain(head, iterator):
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:
