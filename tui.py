@@ -1,4 +1,5 @@
 import base64
+import difflib
 import json
 import mimetypes
 import random
@@ -138,6 +139,8 @@ COMMANDS = [
     ("restore stashed prompt", "stash_pop"),
     ("toggle timestamps", "timestamps"),
     ("toggle sidebar", "sidebar"),
+    ("view diff of last turn", "diff"),
+    ("show keybindings", "which_key"),
     ("quit", "quit"),
 ]
 
@@ -208,6 +211,19 @@ HELP = """[b]commands[/]
   ctrl+c / ctrl+q quit   (mouse wheel scrolls; select with the mouse to copy)
 
 The model plans multi-step work with a todo list shown in the sidebar."""
+
+KEYS_TEXT = """[b]keys (which-key)[/]
+  enter send · ctrl+j newline · up/down history · ctrl+l clear
+  tab / shift+tab    cycle agent (build/plan)
+  ctrl+p             command palette (type to search)
+  ctrl+x             leader: n new · l sessions · 1-9 quick-switch · u undo · r redo
+                     y copy · m models · t theme · c compact · x export · p pin
+                     b sidebar · s status · h help · q quit
+  f2 / shift+f2      cycle model
+  ctrl+o             toggle sidebar       ctrl+t  theme
+  f1                 help                 esc     cancel · (esc esc) quit
+  ctrl+d / ctrl+c    quit
+  pgup/pgdn, ctrl+up/down, ctrl+home/end    scroll"""
 
 TOUR = """## Welcome to mybot
 
@@ -817,6 +833,40 @@ class PromptScreen(ModalScreen):
         self.dismiss(None)
 
 
+class DiffScreen(ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "cancel"), Binding("q", "cancel", "cancel")]
+
+    def __init__(self, title: str, files: list) -> None:
+        super().__init__()
+        self.title = title
+        self.files = files
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette"):
+            with Horizontal(id="palette-head"):
+                yield Static(self.title, id="palette-title")
+                yield Static("esc", id="palette-esc")
+            with VerticalScroll(id="diff-body"):
+                for path, diff in self.files:
+                    yield Static(Text(path, style=f"bold {TEXT_COLOR}"), classes="diff-path")
+                    try:
+                        yield Static(
+                            Syntax(
+                                diff,
+                                "diff",
+                                theme="monokai",
+                                word_wrap=False,
+                                background_color="default",
+                                padding=(0, 1),
+                            )
+                        )
+                    except Exception:
+                        yield Static(diff)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ApprovalScreen(ModalScreen):
     BINDINGS = [Binding("escape", "deny", "deny")]
 
@@ -972,6 +1022,9 @@ class MybotApp(App):
     #home-dir { width: 1fr; color: $text-muted; }
     #home-version { width: auto; color: $text-muted; }
     Chooser { align: center middle; background: $background 60%; }
+    DiffScreen { align: center middle; background: $background 60%; }
+    #diff-body { height: auto; max-height: 80%; }
+    .diff-path { margin: 1 0 0 0; }
     #palette { width: 60; height: auto; max-height: 80%; border: none; background: $surface; padding: 1 2; }
     #palette-title { width: 1fr; text-style: bold; color: $foreground; }
     #palette-esc { width: auto; color: $text-muted; }
@@ -988,6 +1041,7 @@ class MybotApp(App):
         Binding("ctrl+d", "quit", "quit", show=False),
         Binding("f2", "model_next", "model", show=False),
         Binding("shift+f2", "model_prev", "model", show=False),
+        Binding("ctrl+alt+k", "which_key", "keys", show=False),
         Binding("tab", "mode", "mode"),
         Binding("shift+tab", "mode_reverse", "mode", show=False),
         Binding("f1", "show_help", "help", show=False),
@@ -1747,6 +1801,10 @@ class MybotApp(App):
             self._pop_stash()
         elif action == "timestamps":
             self._toggle_timestamps()
+        elif action == "diff":
+            self._show_diff()
+        elif action == "which_key":
+            self.action_which_key()
         elif action == "quit":
             self.exit()
 
@@ -2433,6 +2491,30 @@ class MybotApp(App):
     def _toggle_timestamps(self) -> None:
         self.show_timestamps = not self.show_timestamps
         self._note(f"Timestamps: {'on' if self.show_timestamps else 'off'} (new replies)")
+
+    def _show_diff(self) -> None:
+        if not self._undo_stack:
+            self._note("No changes to show yet (the diff viewer shows the last turn's file edits).")
+            return
+        entry = self._undo_stack[-1]
+        before = entry.get("files") or {}
+        after = entry.get("files_after") or {}
+        files = []
+        for path, old in before.items():
+            new = after.get(path)
+            if old == new:
+                continue
+            diff = difflib.unified_diff(
+                (old or "").splitlines(), (new or "").splitlines(), "before", "after", lineterm=""
+            )
+            files.append((path, "\n".join(diff) or "(no textual change)"))
+        if not files:
+            self._note("No file changes in the last turn.")
+            return
+        self.push_screen(DiffScreen(f"diff · {len(files)} file(s)", files))
+
+    def action_which_key(self) -> None:
+        self._note(KEYS_TEXT)
 
     def _select_session(self, index: int) -> None:
         current = self._session()
