@@ -904,7 +904,9 @@ class MybotApp(App):
     BINDINGS = [
         Binding("ctrl+c", "quit", "quit"),
         Binding("ctrl+q", "quit", "quit", show=False),
+        Binding("ctrl+d", "quit", "quit", show=False),
         Binding("tab", "mode", "mode"),
+        Binding("shift+tab", "mode_reverse", "mode", show=False),
         Binding("f1", "show_help", "help", show=False),
         Binding("ctrl+p", "palette", "palette"),
         Binding("ctrl+x", "leader", "leader", show=False),
@@ -958,6 +960,7 @@ class MybotApp(App):
         self._undo_stack = []
         self._redo_stack = []
         self._auto_compacted = False
+        self._last_esc = 0.0
 
     def _session(self) -> Session:
         return self.sessions[self.index]
@@ -2292,8 +2295,22 @@ class MybotApp(App):
     def action_theme(self) -> None:
         self._choose_theme()
 
+    def _cycle_mode(self, step: int) -> None:
+        modes = list(MODES)
+        if not modes:
+            return
+        index = modes.index(self.mode) if self.mode in modes else 0
+        self.mode = modes[(index + step) % len(modes)]
+        if self.agent is not None:
+            self.agent.messages[0]["content"] = self._system_prompt()
+        self._refresh_status()
+        self._note(f"Agent mode: {self.mode}")
+
     def action_mode(self) -> None:
-        self._choose_mode()
+        self._cycle_mode(1)
+
+    def action_mode_reverse(self) -> None:
+        self._cycle_mode(-1)
 
     def action_palette(self) -> None:
         def done(choice) -> None:
@@ -2303,9 +2320,16 @@ class MybotApp(App):
         self.push_screen(Chooser("commands", COMMANDS), done)
 
     def action_cancel(self) -> None:
+        now = time.monotonic()
+        if now - self._last_esc <= 1.0:
+            self.exit()
+            return
+        self._last_esc = now
         if self.busy:
             self._cancel.set()
-            self._note("Cancelling…")
+            self._note("Cancelling — press esc again to quit")
+        else:
+            self._note("Press esc again to quit")
 
 
 def main() -> None:
