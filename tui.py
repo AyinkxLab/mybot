@@ -27,9 +27,11 @@ from auth import (
     list_models,
     load_auth,
     model_label,
+    provider_label,
     save_auth,
 )
 from config import (
+    AUTO_COMPACT_TOKENS,
     LLM_MODEL_FAST,
     MAX_SESSION_COST,
     REQUIRE_APPROVAL,
@@ -314,6 +316,47 @@ def _tip_text(connected: bool = True) -> Text:
     return text
 
 
+def _fmt_tokens(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    total = int(seconds)
+    if total < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
+def _context_bar(percent: float, width: int = 12) -> tuple:
+    ratio = max(0.0, min(100.0, percent)) / 100
+    filled = int(round(width * ratio))
+    return "█" * filled, "░" * (width - filled)
+
+
+def _path_text(path: str) -> Text:
+    """opencode-style path: parent in muted, final segment in bright text."""
+    text = Text()
+    p = Path(path)
+    name = p.name
+    if not name:
+        text.append(path, style=TEXT_COLOR)
+        return text
+    parent = str(p.parent)
+    if not parent.endswith(("\\", "/")):
+        parent += "\\"
+    text.append(parent, style=MUTED)
+    text.append(name, style=TEXT_COLOR)
+    return text
+
+
 class PromptArea(TextArea):
     class Submitted(Message):
         def __init__(self, area: "PromptArea", value: str) -> None:
@@ -544,7 +587,7 @@ class ThinkingView(Static):
             head = (
                 f"{mark}Thought"
                 + (f": {title}" if title else "")
-                + f" · {self._elapsed:.1f}s"
+                + f" · {_fmt_elapsed(self._elapsed)}"
             )
         text.append(head + "\n", style=f"bold {WARNING_COLOR}")
         if self._expanded and body:
@@ -594,40 +637,67 @@ class Spinner(Static):
 
 class Sidebar(Vertical):
     def compose(self) -> ComposeResult:
+        hint = Text()
+        hint.append("/", style="bold " + TEXT_COLOR)
+        hint.append("~   commands", style=MUTED)
+        yield Static(hint, id="side-hint")
         yield Static("", id="side-title")
         yield Static("", id="side-context")
         yield Static("", id="side-tools")
         yield Static("", id="side-lsp")
         yield Static("", id="side-todo")
+        yield Static("", id="side-version")
 
     def set_title(self, text: str) -> None:
         self.query_one("#side-title", Static).update(text or "new session")
 
+    def set_version(self, text: str) -> None:
+        name, _, version = text.partition(" ")
+        line = Text()
+        line.append("● ", style=SUCCESS_COLOR)
+        line.append(name, style=f"bold {TEXT_COLOR}")
+        if version:
+            line.append(" " + version, style=MUTED)
+        self.query_one("#side-version", Static).update(line)
+
     def set_context(self, tokens: int, percent: float, cost: float) -> None:
+        filled, empty = _context_bar(percent, width=18)
+        color = SUCCESS_COLOR if percent < 50 else (WARNING_COLOR if percent < 80 else ERROR_COLOR)
         text = Text()
-        text.append("Context\n", style="bold #c9d1d9")
-        text.append(f"{tokens:,} tokens\n", style="#9ca3af")
-        text.append(f"{percent:.0f}% used\n", style="#9ca3af")
-        text.append(f"${cost:.2f} spent\n", style="#9ca3af")
+        text.append("Context\n", style=f"bold {TEXT_COLOR}")
+        text.append(filled, style=color)
+        text.append(empty, style="#3c3c3c")
+        text.append("\n")
+        text.append(f"{tokens:,} tokens\n", style=MUTED)
+        text.append(f"{percent:.0f}% used\n", style=MUTED)
+        text.append(f"${cost:.2f} spent\n", style=MUTED)
         self.query_one("#side-context", Static).update(text)
 
     def set_tools(self, count: int) -> None:
         text = Text()
-        text.append("Tools\n", style="bold #c9d1d9")
+        text.append("Tools\n", style=f"bold {TEXT_COLOR}")
         text.append(f"{count} enabled\n", style="#9ca3af")
         self.query_one("#side-tools", Static).update(text)
 
     def set_lsp(self, message: str) -> None:
+        widget = self.query_one("#side-lsp", Static)
+        if not message or "disabled" in message.lower():
+            widget.display = False
+            return
+        widget.display = True
         text = Text()
-        text.append("LSP\n", style="bold #c9d1d9")
+        text.append("LSP\n", style=f"bold {TEXT_COLOR}")
         text.append(f"{message}\n", style="#9ca3af")
-        self.query_one("#side-lsp", Static).update(text)
+        widget.update(text)
 
     def set_todos(self, todos: list) -> None:
-        text = Text()
-        text.append("todo\n", style="bold #c9d1d9")
+        widget = self.query_one("#side-todo", Static)
         if not todos:
-            text.append("none\n", style="#6b7280")
+            widget.display = False
+            return
+        widget.display = True
+        text = Text()
+        text.append("todo\n", style=f"bold {TEXT_COLOR}")
         for item in todos:
             status = item["status"]
             if status == "completed":
@@ -639,7 +709,7 @@ class Sidebar(Vertical):
             else:
                 text.append("○ ", style="grey50")
                 text.append(item["content"] + "\n", style="grey70")
-        self.query_one("#side-todo", Static).update(text)
+        widget.update(text)
 
 
 class Chooser(ModalScreen):
@@ -652,7 +722,9 @@ class Chooser(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="palette"):
-            yield Static(self.title, id="palette-title")
+            with Horizontal(id="palette-head"):
+                yield Static(self.title, id="palette-title")
+                yield Static("esc", id="palette-esc")
             yield OptionList(
                 *(Option(label, id=str(index)) for index, (label, _) in enumerate(self.options)),
                 id="palette-list",
@@ -764,9 +836,11 @@ class MybotApp(App):
     Screen { background: $background; color: $foreground; }
     #main { height: 1fr; }
     #chat { width: 1fr; padding: 0 1; }
-    #sidebar { width: 40; border-left: solid $surface; padding: 1 1; }
+    #sidebar { width: 42; background: $surface; padding: 1 2; }
     Sidebar Static { height: auto; margin: 0 0 1 0; }
     #side-title { text-style: bold; color: $foreground; }
+    #side-hint { height: 1; color: $text-muted; margin: 0 0 1 0; }
+    #side-version { color: $text-muted; margin: 1 0 0 0; }
     .meta { color: $text-muted; padding: 0 0 0 3; height: auto; margin: 0 0 1 0; }
     #bottom { dock: bottom; height: auto; }
     #cmdmenu, #home-cmdmenu { height: auto; max-height: 9; border: none; background: $panel; padding: 0 1; }
@@ -777,10 +851,10 @@ class MybotApp(App):
     #footer-left { width: 1fr; color: $text-muted; }
     #footer-right { width: auto; text-align: right; color: $text-muted; }
     .msg { margin: 0 0 1 0; padding: 0 0 0 1; height: auto; }
-    .msg.you { border-left: thick #5c9cf5; }
-    .msg.mybot { border-left: none; }
+    .msg.you { border-left: thick #5c9cf5; background: $surface; padding: 0 1; }
+    .msg.mybot { border-left: none; padding: 0 0 0 1; }
     .role { height: 1; text-style: bold; color: #808080; }
-    .msg.you .role { color: #5c9cf5; }
+    .msg.you .role { display: none; }
     .msg.mybot .role { color: #808080; }
     Markdown { color: #eeeeee; link-color: #fab283; link-style: underline; }
     MarkdownH1, MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 { color: #9d7cd8; text-style: bold; }
@@ -793,15 +867,15 @@ class MybotApp(App):
     MarkdownTableContent > .markdown-table--header { color: #fab283; text-style: bold; }
     .tool { padding: 0 0 0 3; height: auto; }
     .thinking { margin: 0 0 1 0; padding: 0 0 0 3; height: auto; }
-    #prompt { height: auto; max-height: 10; border: none; background: $panel; padding: 0 1; }
-    #prompt:focus { border: none; }
-    ApprovalScreen { align: center middle; }
-    #approval { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
-    #approval-title { text-style: bold; color: $warning; }
+    #prompt { height: auto; max-height: 10; border: none; border-left: thick #3c3c3c; background: $panel; padding: 0 1; }
+    #prompt:focus { border-left: thick $secondary; }
+    ApprovalScreen { align: center middle; background: $background 60%; }
+    #approval { width: 72; height: auto; border: none; background: $surface; padding: 1 2; }
+    #approval-title { text-style: bold; color: $foreground; }
     #approval-buttons { height: auto; align: right middle; }
-    ConnectScreen { align: center middle; }
-    #connect { width: 76; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
-    #connect-title { text-style: bold; color: $primary; }
+    ConnectScreen { align: center middle; background: $background 60%; }
+    #connect { width: 76; height: auto; border: none; background: $surface; padding: 1 2; }
+    #connect-title { text-style: bold; color: $foreground; }
     .field-label { color: $text-muted; margin: 1 0 0 0; }
     #model-row { height: auto; }
     #model-row Select { width: 1fr; }
@@ -818,9 +892,13 @@ class MybotApp(App):
     #home-footer { dock: bottom; height: 1; padding: 0 2; }
     #home-dir { width: 1fr; color: $text-muted; }
     #home-version { width: auto; color: $text-muted; }
-    Chooser { align: center middle; }
-    #palette { width: 60; height: auto; max-height: 80%; border: thick $primary; background: $surface; padding: 1 2; }
-    #palette-title { text-style: bold; color: $primary; margin: 0 0 1 0; }
+    Chooser { align: center middle; background: $background 60%; }
+    #palette { width: 60; height: auto; max-height: 80%; border: none; background: $surface; padding: 1 2; }
+    #palette-title { width: 1fr; text-style: bold; color: $foreground; }
+    #palette-esc { width: auto; color: $text-muted; }
+    #palette-head { height: 1; margin: 0 0 1 0; }
+    OptionList { background: $surface; border: none; }
+    OptionList > .option-list--option-highlighted { background: $primary; color: #0a0a0a; text-style: bold; }
     """
 
     BINDINGS = [
@@ -878,6 +956,7 @@ class MybotApp(App):
         self.index = 0
         self._undo_stack = []
         self._redo_stack = []
+        self._auto_compacted = False
 
     def _session(self) -> Session:
         return self.sessions[self.index]
@@ -922,6 +1001,7 @@ class MybotApp(App):
         sidebar.set_tools(len(TOOL_SPECS))
         sidebar.set_lsp("LSPs are disabled")
         sidebar.set_todos(get_todos())
+        sidebar.set_version(VERSION)
         self._refresh_status()
         self._rebuild_chat()
         self._set_view("chat" if self._session().records else "home")
@@ -1169,31 +1249,29 @@ class MybotApp(App):
         left.append("· ", style=MUTED)
         left.append(model, style=TEXT_COLOR)
         if provider:
-            left.append(f"  {provider}", style=MUTED)
+            left.append(" " + provider_label(provider), style=MUTED)
         self.query_one("#status-left", Static).update(left)
-
-        self.query_one("#status-right", Static).update(Text(str(WORKSPACE), style=MUTED))
+        self.query_one("#status-right", Static).update(Text(""))
 
         cost = self._cost()
+
         footer_left = Text()
         if self._working:
             footer_left.append(WORK_FRAMES[self._work_i % len(WORK_FRAMES)] + " ", style=ACCENT_SOFT)
             footer_left.append("working", style=TEXT_COLOR)
-            footer_left.append("  ·  esc to interrupt", style=MUTED)
-        else:
-            footer_left.append("● ", style=MUTED)
-            footer_left.append("0 LSP", style=TEXT_COLOR)
-            footer_left.append("   /status", style=MUTED)
+            footer_left.append("  ·  ", style=MUTED)
+        footer_left.append_text(_path_text(str(WORKSPACE)))
         self.query_one("#footer-left", Static).update(footer_left)
 
         footer = Text()
         if self.context_tokens:
             footer.append(
-                f"{self.context_tokens:,} ({self._context_percent():.0f}%)", style=MUTED
+                f"{_fmt_tokens(self.context_tokens)} ({self._context_percent():.0f}%)", style=MUTED
             )
             if cost is not None:
-                footer.append(f"   ${cost:.4f}", style=MUTED)
-            footer.append("   ", style=MUTED)
+                footer.append("  ·  ", style=MUTED)
+                footer.append(f"${cost:.2f}", style=MUTED)
+            footer.append("     ", style=MUTED)
         footer.append("ctrl+p", style=TEXT_COLOR)
         footer.append(" commands", style=MUTED)
         self.query_one("#footer-right", Static).update(footer)
@@ -1236,14 +1314,14 @@ class MybotApp(App):
             meta.append("· ", style=MUTED)
             meta.append(model_label(self.agent.model), style=TEXT_COLOR)
             if provider:
-                meta.append(f"  {provider}", style=MUTED)
+                meta.append(" " + provider_label(provider), style=MUTED)
         else:
             meta.append("not connected", style=WARNING_COLOR)
             meta.append("   Run ", style=MUTED)
             meta.append("/connect", style=TEXT_COLOR)
             meta.append(" to add an AI provider", style=MUTED)
         self.query_one("#home-agent", Static).update(meta)
-        self.query_one("#home-dir", Static).update(str(WORKSPACE))
+        self.query_one("#home-dir", Static).update(_path_text(str(WORKSPACE)))
 
     def _scroll_end(self) -> None:
         try:
@@ -1705,8 +1783,8 @@ class MybotApp(App):
         meta.append("▪ ", style=ACCENT_SOFT)
         meta.append(self.mode.capitalize(), style=ACCENT_SOFT)
         meta.append(" · ", style="#4b5563")
-        meta.append(self.agent.model if self.agent else "", style="#9ca3af")
-        meta.append(f" · {elapsed:.1f}s", style="#6b7280")
+        meta.append(model_label(self.agent.model) if self.agent else "", style="#9ca3af")
+        meta.append(f" · {_fmt_elapsed(elapsed)}", style="#6b7280")
         self.query_one("#chat", VerticalScroll).mount(Static(meta, classes="meta"))
         self._record({"kind": "meta", "text": meta.plain})
         self._assistant_view = None
@@ -1716,6 +1794,8 @@ class MybotApp(App):
         self.tokens_in += tokens_in
         self.tokens_out += tokens_out
         self.context_tokens = tokens_in
+        if AUTO_COMPACT_TOKENS and self.context_tokens < AUTO_COMPACT_TOKENS * 0.5:
+            self._auto_compacted = False
         self._refresh_status()
 
     def _add_reasoning(self, chunk: str) -> None:
@@ -1797,6 +1877,20 @@ class MybotApp(App):
         self.query_one("#prompt", PromptArea).focus()
         self._attach_snapshot()
         self._persist()
+        self._maybe_auto_compact()
+
+    def _maybe_auto_compact(self) -> None:
+        if (
+            AUTO_COMPACT_TOKENS
+            and not self._auto_compacted
+            and self.agent is not None
+            and self.context_tokens >= AUTO_COMPACT_TOKENS
+        ):
+            self._auto_compacted = True
+            self._note(
+                f"Context {_fmt_tokens(self.context_tokens)} · auto-compacting to save tokens"
+            )
+            self._compact()
 
     def _approve(self, action: str) -> bool:
         event = threading.Event()
@@ -2165,6 +2259,7 @@ class MybotApp(App):
         self.sessions.append(Session(agent))
         self._undo_stack = []
         self._redo_stack = []
+        self._auto_compacted = False
         self._select_session(len(self.sessions) - 1)
         todo_write([])
         self.query_one(Sidebar).set_todos([])
