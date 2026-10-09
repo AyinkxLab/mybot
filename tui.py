@@ -927,6 +927,7 @@ class MybotApp(App):
         self.agent = None
         self.busy = False
         self.mode = "build"
+        self._prev_mode = "build"
         self.view = "home"
         self.title = "new session"
         self.tokens_in = 0
@@ -1239,6 +1240,20 @@ class MybotApp(App):
     def _system_prompt(self) -> str:
         return SYSTEM_PROMPT + MODES.get(self.mode, "")
 
+    def _mode_reminder(self) -> str:
+        if self.mode == "plan":
+            return (
+                "\n\n<system-reminder>Plan mode is active. Do not edit files, run write-shaped "
+                "commands, change config, or commit. Investigate and produce a plan; tell the user "
+                "to switch to build mode before making any changes.</system-reminder>"
+            )
+        if self._prev_mode == "plan":
+            return (
+                "\n\n<system-reminder>Build mode is active. You may now make changes, run commands, "
+                "and commit as needed.</system-reminder>"
+            )
+        return ""
+
     def _refresh_status(self) -> None:
         model = model_label(self.agent.model) if self.agent else "not connected"
         provider = load_auth().get("provider", "")
@@ -1387,6 +1402,10 @@ class MybotApp(App):
         if LLM_MODEL_FAST and len(text) < 60 and "\n" not in text and "`" not in text:
             model_override = LLM_MODEL_FAST
         enriched, images = self._expand_refs(text)
+        reminder = self._mode_reminder()
+        if reminder:
+            enriched = enriched + reminder
+        self._prev_mode = self.mode
         self._run_agent(enriched, model_override, images)
 
     def _history_move(self, area, key: str) -> bool:

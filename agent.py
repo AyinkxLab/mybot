@@ -1,7 +1,15 @@
 import json
+import random
+import time
 from itertools import chain
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from auth import list_models, load_auth
 from config import (
@@ -14,6 +22,7 @@ from config import (
     LLM_FALLBACK_API_KEY,
     LLM_FALLBACK_BASE_URL,
     LLM_FALLBACK_MODEL,
+    LLM_MAX_RETRIES,
     LLM_MAX_TOKENS,
     LLM_MODEL,
     MAX_TOOL_ROUNDS,
@@ -21,6 +30,18 @@ from config import (
     TOOLSET_MODE,
 )
 from tools import all_tool_specs, execute_tool
+
+_RETRYABLE = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, _RETRYABLE):
+        return True
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in ("rate limit", "429", "500", "502", "503", "504", "timeout", "timed out", "connection")
+    )
 
 # When a request contains one of these, we override the default "minimum work"
 # behaviour and tell the model to be exhaustive for that turn.
@@ -47,7 +68,12 @@ _THOROUGH_NUDGE = (
 
 
 class Agent:
-    def __init__(self, system_prompt: str = SYSTEM_PROMPT, history_limit: int = HISTORY_LIMIT):
+    def __init__(
+        self,
+        system_prompt: str = SYSTEM_PROMPT,
+        history_limit: int = HISTORY_LIMIT,
+        subagent: bool = False,
+    ):
         auth = load_auth()
         api_key = auth.get("api_key") or LLM_API_KEY
         self.base_url = auth.get("base_url") or LLM_BASE_URL
@@ -58,6 +84,8 @@ class Agent:
         self.fallback_client = None
         self.fallback_model = LLM_FALLBACK_MODEL or None
         self._fallback_checked = False
+        self._no_tools_models = set()
+        self.subagent = subagent
         self.history_limit = history_limit
         try:
             from memory import format_notes
@@ -125,25 +153,50 @@ class Agent:
             pass
         return self.fallback_client, self.fallback_model
 
+    def _create(self, client, request, usage: bool):
+        attempt = 0
+        while True:
+            kwargs = dict(request)
+            if usage:
+                kwargs["stream_options"] = {"include_usage": True}
+            try:
+                return client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if attempt >= LLM_MAX_RETRIES or not _is_transient(exc):
+                    raise
+                attempt += 1
+                time.sleep(min(2 ** attempt, 12) + random.random())
+
     def _open_stream(self, client, model):
         tools = all_tool_specs()
         if TOOLSET_MODE == "core":
             tools = [spec for spec in tools if spec["function"]["name"] in CORE_TOOLS]
-        request = {
-            "model": model,
-            "messages": self.messages,
-            "tools": tools,
-            "tool_choice": "auto",
-            "stream": True,
-        }
+        if self.subagent:
+            tools = [spec for spec in tools if spec["function"]["name"] != "task"]
+        request = {"model": model, "messages": self.messages, "stream": True}
+        if tools and model not in self._no_tools_models:
+            request["tools"] = tools
+            request["tool_choice"] = "auto"
         if LLM_MAX_TOKENS > 0:
             request["max_tokens"] = LLM_MAX_TOKENS
+
+        def strip_tools():
+            self._no_tools_models.add(model)
+            request.pop("tools", None)
+            request.pop("tool_choice", None)
+
         try:
-            return client.chat.completions.create(
-                **request, stream_options={"include_usage": True}
-            )
-        except Exception:
-            return client.chat.completions.create(**request)
+            return self._create(client, request, usage=True)
+        except Exception as exc:
+            if "tools" in request and "does not support tools" in str(exc).lower():
+                strip_tools()
+            try:
+                return self._create(client, request, usage=False)
+            except Exception as exc2:
+                if "tools" in request and "does not support tools" in str(exc2).lower():
+                    strip_tools()
+                    return self._create(client, request, usage=False)
+                raise
 
     def _should_escalate(self, text: str) -> bool:
         if not ESCALATE_COMPLEX:
