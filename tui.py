@@ -221,7 +221,7 @@ KEYS_TEXT = """[b]keys (which-key)[/]
                      b sidebar · s status · h help · q quit
   f2 / shift+f2      cycle model
   ctrl+o             toggle sidebar       ctrl+t  theme
-  f1                 help                 esc     cancel · (esc esc) quit
+  f1                 help                 esc     interrupt the run
   ctrl+d / ctrl+c    quit
   pgup/pgdn, ctrl+up/down, ctrl+home/end    scroll"""
 
@@ -1097,7 +1097,6 @@ class MybotApp(App):
         self._undo_stack = []
         self._redo_stack = []
         self._auto_compacted = False
-        self._last_esc = 0.0
         self._stash = ""
         self._models_cache = None
         self.show_timestamps = True
@@ -2629,16 +2628,9 @@ class MybotApp(App):
         self.push_screen(Chooser("commands", COMMANDS), done)
 
     def action_cancel(self) -> None:
-        now = time.monotonic()
-        if now - self._last_esc <= 1.0:
-            self.exit()
-            return
-        self._last_esc = now
         if self.busy:
             self._cancel.set()
-            self._note("Cancelling — press esc again to quit")
-        else:
-            self._note("Press esc again to quit")
+            self._note("Interrupted.")
 
 
 def main() -> None:
