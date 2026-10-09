@@ -499,6 +499,20 @@ def recall(query: str = "") -> str:
     return "\n".join(f"- {note.get('text', '')}" for note in notes[-50:])
 
 
+def task(description: str, prompt: str = "") -> str:
+    from agent import Agent
+    from config import SUBAGENT_PROMPT
+
+    try:
+        sub = Agent(system_prompt=SUBAGENT_PROMPT, subagent=True, history_limit=12)
+    except Exception as exc:
+        return f"ERROR: subagent unavailable: {exc}"
+    try:
+        return _truncate(sub.respond(prompt or description))
+    except Exception as exc:
+        return f"ERROR: subagent failed: {exc}"
+
+
 TOOL_SPECS = [
     {
         "type": "function",
@@ -809,6 +823,29 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "task",
+            "description": (
+                "Launch a subagent with a fresh, isolated context to handle a self-contained "
+                "subtask (e.g. exploring a codebase or gathering information). Give it a "
+                "detailed task description; it returns one concise summary. Use it to save "
+                "context on work that can be delegated."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Short task name"},
+                    "prompt": {
+                        "type": "string",
+                        "description": "Detailed instructions for the subagent",
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+    },
 ]
 
 _DISPATCH = {
@@ -830,6 +867,7 @@ _DISPATCH = {
     "todo_write": todo_write,
     "remember": remember,
     "recall": recall,
+    "task": task,
     "add_trigger": add_trigger,
     "list_triggers": list_triggers,
     "remove_trigger": remove_trigger,
